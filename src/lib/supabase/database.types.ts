@@ -1,0 +1,251 @@
+export type Json =
+  | string
+  | number
+  | boolean
+  | null
+  | { [key: string]: Json | undefined }
+  | Json[];
+
+export type Database = {
+  public: {
+    Tables: {
+      profiles: {
+        Row: {
+          id: string;
+          display_name: string;
+          games_played: number;
+          games_won: number;
+          hits_delivered: number;
+          hits_received: number;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id: string;
+          display_name: string;
+          games_played?: number;
+          games_won?: number;
+          hits_delivered?: number;
+          hits_received?: number;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          display_name?: string;
+          games_played?: number;
+          games_won?: number;
+          hits_delivered?: number;
+          hits_received?: number;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [];
+      };
+      game_rooms: {
+        Row: {
+          id: string;
+          code: string;
+          host_id: string;
+          max_players: number;
+          status: "waiting" | "playing" | "showdown" | "closed";
+          state: Json;
+          version: number;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          code: string;
+          host_id: string;
+          max_players: number;
+          status?: "waiting" | "playing" | "showdown" | "closed";
+          state?: Json;
+          version?: number;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          code?: string;
+          host_id?: string;
+          max_players?: number;
+          status?: "waiting" | "playing" | "showdown" | "closed";
+          state?: Json;
+          version?: number;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "game_rooms_host_id_fkey";
+            columns: ["host_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      room_members: {
+        Row: {
+          room_id: string;
+          user_id: string;
+          seat: number;
+          ready: boolean;
+          joined_at: string;
+        };
+        Insert: {
+          room_id: string;
+          user_id: string;
+          seat: number;
+          ready?: boolean;
+          joined_at?: string;
+        };
+        Update: {
+          room_id?: string;
+          user_id?: string;
+          seat?: number;
+          ready?: boolean;
+          joined_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "room_members_room_id_fkey";
+            columns: ["room_id"];
+            isOneToOne: false;
+            referencedRelation: "game_rooms";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "room_members_user_id_fkey";
+            columns: ["user_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      game_results: {
+        Row: {
+          id: string;
+          room_id: string | null;
+          winner_id: string | null;
+          player_ids: string[];
+          stake: string | number;
+          round_token: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          room_id?: string | null;
+          winner_id?: string | null;
+          player_ids: string[];
+          stake: string | number;
+          round_token?: string;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          room_id?: string | null;
+          winner_id?: string | null;
+          player_ids?: string[];
+          stake?: string | number;
+          round_token?: string;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "game_results_room_id_fkey";
+            columns: ["room_id"];
+            isOneToOne: false;
+            referencedRelation: "game_rooms";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "game_results_winner_id_fkey";
+            columns: ["winner_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      hit_obligations: {
+        Row: {
+          id: string;
+          game_result_id: string;
+          room_id: string | null;
+          debtor_id: string;
+          creditor_id: string;
+          initial_hits: string | number;
+          remaining_hits: string | number;
+          delivered_hits: number;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          game_result_id: string;
+          room_id?: string | null;
+          debtor_id: string;
+          creditor_id: string;
+          initial_hits: string | number;
+          remaining_hits: string | number;
+          delivered_hits?: number;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          game_result_id?: string;
+          room_id?: string | null;
+          debtor_id?: string;
+          creditor_id?: string;
+          initial_hits?: string | number;
+          remaining_hits?: string | number;
+          delivered_hits?: number;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "hit_obligations_game_result_id_fkey";
+            columns: ["game_result_id"];
+            isOneToOne: false;
+            referencedRelation: "game_results";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "hit_obligations_room_id_fkey";
+            columns: ["room_id"];
+            isOneToOne: false;
+            referencedRelation: "game_rooms";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "hit_obligations_debtor_id_fkey";
+            columns: ["debtor_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "hit_obligations_creditor_id_fkey";
+            columns: ["creditor_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+    };
+    Views: Record<never, never>;
+    Functions: Record<never, never>;
+    Enums: Record<never, never>;
+    CompositeTypes: Record<never, never>;
+  };
+};
+
+export type Tables<
+  TableName extends keyof Database["public"]["Tables"],
+> = Database["public"]["Tables"][TableName]["Row"];
