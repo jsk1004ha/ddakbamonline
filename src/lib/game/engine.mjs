@@ -1,18 +1,22 @@
 const MIN_PLAYERS = 2;
 const MAX_PLAYERS = 4;
 const BRIGHT_MONTHS = new Set([1, 3, 8]);
+const MAX_SAFE_INTEGER_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
+
+// Public quantities stay as numbers while safe and become canonical decimal
+// strings above that range, keeping exact engine state JSON serializable.
 
 const BRIGHT_HANDS = new Map([
-  ["3,8", { name: "38광땅", tiebreak: 3 }],
-  ["1,8", { name: "18광땅", tiebreak: 2 }],
-  ["1,3", { name: "13광땅", tiebreak: 1 }],
+  ["3,8", { name: "38광땡", tiebreak: 3 }],
+  ["1,8", { name: "18광땡", tiebreak: 2 }],
+  ["1,3", { name: "13광땡", tiebreak: 1 }],
 ]);
 
 const SPECIAL_HANDS = new Map([
   ["1,2", { name: "알리", tiebreak: 6 }],
   ["1,4", { name: "독사", tiebreak: 5 }],
-  ["1,9", { name: "구삐", tiebreak: 4 }],
-  ["1,10", { name: "장삐", tiebreak: 3 }],
+  ["1,9", { name: "구삥", tiebreak: 4 }],
+  ["1,10", { name: "장삥", tiebreak: 3 }],
   ["4,10", { name: "장사", tiebreak: 2 }],
   ["4,6", { name: "세륙", tiebreak: 1 }],
 ]);
@@ -43,10 +47,36 @@ function validatePlayerIds(playerIds) {
   }
 }
 
-function requirePositiveSafeInteger(value, label) {
-  if (!Number.isSafeInteger(value) || value <= 0) {
-    throw new RangeError(`${label} must be a positive safe integer`);
+function parseExactInteger(value, label, allowZero = false) {
+  let parsed;
+  if (typeof value === "bigint") {
+    parsed = value;
+  } else if (typeof value === "number") {
+    if (!Number.isSafeInteger(value)) {
+      throw new RangeError(
+        `${label} number must be a safe integer; use a decimal string or bigint for larger values`,
+      );
+    }
+    parsed = BigInt(value);
+  } else if (typeof value === "string") {
+    if (!/^\d+$/.test(value)) {
+      throw new RangeError(`${label} must be an unsigned decimal integer`);
+    }
+    parsed = BigInt(value);
+  } else {
+    throw new TypeError(`${label} must be a number, decimal string, or bigint`);
   }
+
+  if (allowZero ? parsed < 0n : parsed <= 0n) {
+    throw new RangeError(
+      `${label} must be ${allowZero ? "a non-negative" : "a positive"} integer`,
+    );
+  }
+  return parsed;
+}
+
+function serializeExactInteger(value) {
+  return value <= MAX_SAFE_INTEGER_BIGINT ? Number(value) : value.toString();
 }
 
 function orderedFrom(playerIds, startingIndex) {
@@ -159,7 +189,7 @@ export function evaluateHand(cards) {
 
   if (months[0] === months[1]) {
     return {
-      name: `${months[0]}땅`,
+      name: `${months[0]}땡`,
       rank: 2,
       tiebreak: months[0],
       months,
@@ -210,7 +240,7 @@ export function createBettingState(
   startingPlayerIndex = 0,
 ) {
   validatePlayerIds(playerIds);
-  requirePositiveSafeInteger(startingStake, "startingStake");
+  const exactStartingStake = parseExactInteger(startingStake, "startingStake");
   if (
     !Number.isInteger(startingPlayerIndex) ||
     startingPlayerIndex < 0 ||
@@ -224,7 +254,7 @@ export function createBettingState(
   return {
     playerIds: players,
     commitments: Object.fromEntries(players.map((playerId) => [playerId, 0])),
-    currentStake: startingStake,
+    currentStake: serializeExactInteger(exactStartingStake),
     pot: 0,
     turnPlayerId: pendingPlayerIds[0],
     lastAggressorId: null,
@@ -247,10 +277,24 @@ function validateBettingState(state) {
   if (!Array.isArray(state.pendingPlayerIds)) {
     throw new TypeError("state pending players are invalid");
   }
+
+  const currentStake = parseExactInteger(state.currentStake, "state currentStake");
+  const pot = parseExactInteger(state.pot, "state pot", true);
+  const commitments = Object.fromEntries(
+    state.playerIds.map((playerId) => [
+      playerId,
+      parseExactInteger(
+        state.commitments[playerId],
+        `commitment for ${playerId}`,
+        true,
+      ),
+    ]),
+  );
+  return { currentStake, pot, commitments };
 }
 
 export function applyAction(state, playerId, action) {
-  validateBettingState(state);
+  const exactState = validateBettingState(state);
   requireAccountId(playerId, "playerId");
   if (state.status !== "betting") {
     throw new RangeError("betting is already complete");
@@ -262,22 +306,17 @@ export function applyAction(state, playerId, action) {
     throw new TypeError("action must be an object");
   }
 
-  const currentCommitment = state.commitments[playerId];
-  if (!Number.isFinite(currentCommitment)) {
-    throw new TypeError("turn player has no valid commitment");
-  }
+  const currentCommitment = exactState.commitments[playerId];
 
   if (action.type === "raise") {
-    if (
-      !Number.isSafeInteger(action.amount) ||
-      action.amount <= state.currentStake
-    ) {
+    const amount = parseExactInteger(action.amount, "raise amount");
+    if (amount <= exactState.currentStake) {
       throw new RangeError("raise amount must be an integer above the current stake");
     }
 
     const commitments = {
       ...state.commitments,
-      [playerId]: action.amount,
+      [playerId]: serializeExactInteger(amount),
     };
     const playerIndex = state.playerIds.indexOf(playerId);
     const pendingPlayerIds = orderedFrom(
@@ -288,8 +327,8 @@ export function applyAction(state, playerId, action) {
     return {
       ...state,
       commitments,
-      currentStake: action.amount,
-      pot: state.pot + action.amount - currentCommitment,
+      currentStake: serializeExactInteger(amount),
+      pot: serializeExactInteger(exactState.pot + amount - currentCommitment),
       turnPlayerId: pendingPlayerIds[0],
       lastAggressorId: playerId,
       status: "betting",
@@ -303,18 +342,25 @@ export function applyAction(state, playerId, action) {
 
   const commitments = {
     ...state.commitments,
-    [playerId]: state.currentStake,
+    [playerId]: serializeExactInteger(exactState.currentStake),
   };
   const pendingPlayerIds = state.pendingPlayerIds.slice(1);
   const allMatched = state.playerIds.every(
-    (candidateId) => commitments[candidateId] === state.currentStake,
+    (candidateId) =>
+      parseExactInteger(
+        commitments[candidateId],
+        `commitment for ${candidateId}`,
+        true,
+      ) === exactState.currentStake,
   );
   const complete = pendingPlayerIds.length === 0 && allMatched;
 
   return {
     ...state,
     commitments,
-    pot: state.pot + state.currentStake - currentCommitment,
+    pot: serializeExactInteger(
+      exactState.pot + exactState.currentStake - currentCommitment,
+    ),
     turnPlayerId: complete ? null : pendingPlayerIds[0],
     status: complete ? "complete" : "betting",
     pendingPlayerIds,
@@ -353,7 +399,7 @@ export function settleRound(existingObligations, result) {
   }
 
   const { winnerId, loserIds, stake } = result;
-  requirePositiveSafeInteger(stake, "stake");
+  const exactStake = parseExactInteger(stake, "stake");
   validateLoserIds(loserIds);
 
   if (winnerId === null) {
@@ -381,8 +427,8 @@ export function settleRound(existingObligations, result) {
       id: generated.id,
       debtorId,
       creditorId: winnerId,
-      initial: stake,
-      remaining: stake,
+      initial: serializeExactInteger(exactStake),
+      remaining: serializeExactInteger(exactStake),
       delivered: 0,
     };
   });
@@ -402,19 +448,26 @@ export function recordHit(obligations, obligationId) {
   }
 
   const obligation = obligations[obligationIndex];
-  if (!Number.isSafeInteger(obligation.remaining) || obligation.remaining <= 0) {
+  const remaining = parseExactInteger(
+    obligation.remaining,
+    "obligation remaining",
+    true,
+  );
+  if (remaining === 0n) {
     throw new RangeError("obligation is already complete");
   }
-  if (!Number.isSafeInteger(obligation.delivered) || obligation.delivered < 0) {
-    throw new RangeError("obligation delivered count is invalid");
-  }
+  const delivered = parseExactInteger(
+    obligation.delivered,
+    "obligation delivered",
+    true,
+  );
 
   return obligations.map((candidate, index) =>
     index === obligationIndex
       ? {
           ...candidate,
-          remaining: candidate.remaining - 1,
-          delivered: candidate.delivered + 1,
+          remaining: serializeExactInteger(remaining - 1n),
+          delivered: serializeExactInteger(delivered + 1n),
         }
       : candidate,
   );
@@ -426,18 +479,35 @@ export function summarizeAccountLedger(obligations, accountId) {
   }
   requireAccountId(accountId, "accountId");
 
-  return obligations.reduce(
+  const exactSummary = obligations.reduce(
     (summary, obligation) => {
+      const remaining = parseExactInteger(
+        obligation.remaining,
+        "obligation remaining",
+        true,
+      );
+      const delivered = parseExactInteger(
+        obligation.delivered,
+        "obligation delivered",
+        true,
+      );
       if (obligation.debtorId === accountId) {
-        summary.owes += obligation.remaining;
-        summary.hitsReceived += obligation.delivered;
+        summary.owes += remaining;
+        summary.hitsDelivered += delivered;
       }
       if (obligation.creditorId === accountId) {
-        summary.isOwed += obligation.remaining;
-        summary.hitsDelivered += obligation.delivered;
+        summary.isOwed += remaining;
+        summary.hitsReceived += delivered;
       }
       return summary;
     },
-    { owes: 0, isOwed: 0, hitsDelivered: 0, hitsReceived: 0 },
+    { owes: 0n, isOwed: 0n, hitsDelivered: 0n, hitsReceived: 0n },
+  );
+
+  return Object.fromEntries(
+    Object.entries(exactSummary).map(([key, value]) => [
+      key,
+      serializeExactInteger(value),
+    ]),
   );
 }

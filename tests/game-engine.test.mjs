@@ -20,17 +20,17 @@ const card = (month, bright = false, id) => ({
 });
 
 const rankedHands = [
-  ["38광땅", [card(3, true), card(8, true)]],
-  ["18광땅", [card(1, true), card(8, true)]],
-  ["13광땅", [card(1, true), card(3, true)]],
+  ["38광땡", [card(3, true), card(8, true)]],
+  ["18광땡", [card(1, true), card(8, true)]],
+  ["13광땡", [card(1, true), card(3, true)]],
   ...Array.from({ length: 10 }, (_, index) => {
     const month = 10 - index;
-    return [`${month}땅`, [card(month), card(month)]];
+    return [`${month}땡`, [card(month), card(month)]];
   }),
   ["알리", [card(1), card(2)]],
   ["독사", [card(1), card(4)]],
-  ["구삐", [card(1), card(9)]],
-  ["장삐", [card(1), card(10)]],
+  ["구삥", [card(1), card(9)]],
+  ["장삥", [card(1), card(10)]],
   ["장사", [card(4), card(10)]],
   ["세륙", [card(4), card(6)]],
   ["갑오", [card(2), card(7)]],
@@ -222,17 +222,33 @@ test("a raise resets required actions to every other player", () => {
   assert.equal(state.pot, 28);
 });
 
-test("raise amount has no game-defined upper bound", () => {
-  const hugeStake = Number.MAX_SAFE_INTEGER;
-  const state = applyAction(
+test("raise amount is exact above Number.MAX_SAFE_INTEGER and remains JSON serializable", () => {
+  const hugeStake = "900719925474099312345678901234567890";
+  const raised = applyAction(
     createBettingState(["a", "b"]),
     "a",
     { type: "raise", amount: hugeStake },
   );
+  const complete = applyAction(raised, "b", { type: "call" });
 
-  assert.equal(state.currentStake, hugeStake);
-  assert.equal(state.commitments.a, hugeStake);
-  assert.equal(state.pot, hugeStake);
+  assert.equal(raised.currentStake, hugeStake);
+  assert.equal(raised.commitments.a, hugeStake);
+  assert.equal(raised.pot, hugeStake);
+  assert.deepEqual(complete.commitments, { a: hugeStake, b: hugeStake });
+  assert.equal(complete.pot, "1801439850948198624691357802469135780");
+  assert.doesNotThrow(() => JSON.stringify(complete));
+});
+
+test("normal-sized number stakes remain numbers for existing UI consumers", () => {
+  const raised = applyAction(
+    createBettingState(["a", "b"], 3),
+    "a",
+    { type: "raise", amount: 7n },
+  );
+
+  assert.equal(raised.currentStake, 7);
+  assert.equal(raised.commitments.a, 7);
+  assert.equal(raised.pot, 7);
 });
 
 test("betting rejects invalid setup, out-of-turn, unsupported, and invalid actions", () => {
@@ -247,7 +263,18 @@ test("betting rejects invalid setup, out-of-turn, unsupported, and invalid actio
   assert.throws(() => applyAction(state, "b", { type: "call" }), RangeError);
   assert.throws(() => applyAction(state, "a", { type: "fold" }), RangeError);
   assert.throws(() => applyAction(state, "a", null), TypeError);
-  for (const amount of [1, 0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+  for (const amount of [
+    1,
+    0,
+    -1,
+    1.5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.MAX_SAFE_INTEGER + 1,
+    "1.5",
+    "-2",
+    "",
+  ]) {
     assert.throws(() => applyAction(state, "a", { type: "raise", amount }));
   }
 
@@ -323,6 +350,29 @@ test("settleRound appends nothing for a tie", () => {
     settleRound(obligations, { winnerId: null, loserIds: [], stake: 3 }),
     obligations,
   );
+});
+
+test("settleRound and recordHit preserve exact stakes above Number.MAX_SAFE_INTEGER", () => {
+  const hugeStake = 900719925474099312345678901234567890n;
+  const settled = settleRound([], {
+    winnerId: "winner",
+    loserIds: ["loser"],
+    stake: hugeStake,
+  });
+
+  assert.deepEqual(settled[0], {
+    id: "obligation-1",
+    debtorId: "loser",
+    creditorId: "winner",
+    initial: hugeStake.toString(),
+    remaining: hugeStake.toString(),
+    delivered: 0,
+  });
+
+  const recorded = recordHit(settled, "obligation-1");
+  assert.equal(recorded[0].remaining, (hugeStake - 1n).toString());
+  assert.equal(recorded[0].delivered, 1);
+  assert.doesNotThrow(() => JSON.stringify(recorded));
 });
 
 test("settleRound validates stake and account IDs", () => {
@@ -418,8 +468,8 @@ test("summarizeAccountLedger totals directed balances and delivered hits", () =>
   assert.deepEqual(summarizeAccountLedger(obligations, "a"), {
     owes: 5,
     isOwed: 1,
-    hitsDelivered: 3,
-    hitsReceived: 2,
+    hitsDelivered: 2,
+    hitsReceived: 3,
   });
   assert.deepEqual(summarizeAccountLedger(obligations, "c"), {
     owes: 0,
@@ -428,4 +478,33 @@ test("summarizeAccountLedger totals directed balances and delivered hits", () =>
     hitsReceived: 0,
   });
   assert.throws(() => summarizeAccountLedger(obligations, ""), TypeError);
+});
+
+test("summarizeAccountLedger totals arbitrary-precision directed amounts exactly", () => {
+  const huge = "900719925474099312345678901234567890";
+  const obligations = [
+    {
+      id: "one",
+      debtorId: "a",
+      creditorId: "b",
+      initial: huge,
+      remaining: huge,
+      delivered: huge,
+    },
+    {
+      id: "two",
+      debtorId: "a",
+      creditorId: "c",
+      initial: huge,
+      remaining: huge,
+      delivered: huge,
+    },
+  ];
+
+  assert.deepEqual(summarizeAccountLedger(obligations, "a"), {
+    owes: "1801439850948198624691357802469135780",
+    isOwed: 0,
+    hitsDelivered: "1801439850948198624691357802469135780",
+    hitsReceived: 0,
+  });
 });
