@@ -271,25 +271,126 @@ function validateBettingState(state) {
   if (state.status !== "betting" && state.status !== "complete") {
     throw new RangeError("state has an invalid status");
   }
-  if (state.commitments === null || typeof state.commitments !== "object") {
+  if (
+    state.commitments === null ||
+    typeof state.commitments !== "object" ||
+    Array.isArray(state.commitments)
+  ) {
     throw new TypeError("state commitments are invalid");
   }
   if (!Array.isArray(state.pendingPlayerIds)) {
     throw new TypeError("state pending players are invalid");
   }
 
-  const currentStake = parseExactInteger(state.currentStake, "state currentStake");
-  const pot = parseExactInteger(state.pot, "state pot", true);
+  const invalidState = (message, complete = false) => {
+    throw new RangeError(
+      `invalid ${complete ? "complete " : ""}betting state: ${message}`,
+    );
+  };
+  const canonicalQuantity = (value, label, allowZero = false) => {
+    let parsed;
+    try {
+      parsed = parseExactInteger(value, label, allowZero);
+    } catch {
+      invalidState(`${label} is not a valid exact integer`);
+    }
+    if (!Object.is(serializeExactInteger(parsed), value)) {
+      invalidState(`${label} is not canonically serialized`);
+    }
+    return parsed;
+  };
+
+  const commitmentKeys = Object.keys(state.commitments);
+  if (
+    commitmentKeys.length !== state.playerIds.length ||
+    commitmentKeys.some((playerId) => !state.playerIds.includes(playerId))
+  ) {
+    invalidState("commitment keys must exactly match playerIds");
+  }
+
+  const currentStake = canonicalQuantity(
+    state.currentStake,
+    "state currentStake",
+  );
+  const pot = canonicalQuantity(state.pot, "state pot", true);
   const commitments = Object.fromEntries(
     state.playerIds.map((playerId) => [
       playerId,
-      parseExactInteger(
+      canonicalQuantity(
         state.commitments[playerId],
         `commitment for ${playerId}`,
         true,
       ),
     ]),
   );
+
+  if (
+    state.playerIds.some((playerId) => commitments[playerId] > currentStake)
+  ) {
+    invalidState("a commitment cannot exceed currentStake");
+  }
+  const commitmentTotal = Object.values(commitments).reduce(
+    (total, commitment) => total + commitment,
+    0n,
+  );
+  if (pot !== commitmentTotal) {
+    invalidState("pot must equal the sum of commitments");
+  }
+
+  const pendingPlayers = state.pendingPlayerIds;
+  const pendingSet = new Set(pendingPlayers);
+  if (
+    pendingSet.size !== pendingPlayers.length ||
+    pendingPlayers.some((playerId) => !state.playerIds.includes(playerId))
+  ) {
+    invalidState("pendingPlayerIds must be unique playerIds");
+  }
+  if (
+    state.lastAggressorId !== null &&
+    !state.playerIds.includes(state.lastAggressorId)
+  ) {
+    invalidState("lastAggressorId must be null or a playerId");
+  }
+
+  if (state.status === "complete") {
+    if (
+      state.turnPlayerId !== null ||
+      pendingPlayers.length !== 0 ||
+      state.playerIds.some(
+        (playerId) => commitments[playerId] !== currentStake,
+      )
+    ) {
+      invalidState(
+        "turn must be null, pending must be empty, and all commitments must match",
+        true,
+      );
+    }
+  } else {
+    if (
+      pendingPlayers.length === 0 ||
+      state.turnPlayerId !== pendingPlayers[0]
+    ) {
+      invalidState("turnPlayerId must equal the first pending player");
+    }
+    for (const playerId of state.playerIds) {
+      const isPending = pendingSet.has(playerId);
+      const coherentCommitment = isPending
+        ? commitments[playerId] < currentStake
+        : commitments[playerId] === currentStake;
+      if (!coherentCommitment) {
+        invalidState("commitments must agree with pendingPlayerIds");
+      }
+    }
+  }
+
+  if (
+    state.lastAggressorId !== null &&
+    (pendingSet.has(state.lastAggressorId) ||
+      commitments[state.lastAggressorId] !== currentStake)
+  ) {
+    invalidState("lastAggressorId must be matched and outside pendingPlayerIds");
+  }
+
   return { currentStake, pot, commitments };
 }
 

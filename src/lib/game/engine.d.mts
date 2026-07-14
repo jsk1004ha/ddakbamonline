@@ -1,6 +1,11 @@
-export interface Card {
-  id: string;
+export interface HandCard {
   month: number;
+  bright?: boolean;
+  id?: string;
+}
+
+export interface Card extends HandCard {
+  id: string;
   variant: number;
   imageId: number;
   bright: boolean;
@@ -36,8 +41,9 @@ export interface HitObligation {
   delivered: ExactQuantity;
 }
 
+export function createDeck(): Card[];
 export function dealRound(playerIds: string[], rng?: () => number): Record<string, Card[]>;
-export function evaluateHand(cards: Card[]): EvaluatedHand;
+export function evaluateHand(cards: HandCard[]): EvaluatedHand;
 export function compareHands(left: EvaluatedHand, right: EvaluatedHand): number;
 export function createBettingState(
   playerIds: string[],

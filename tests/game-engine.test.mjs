@@ -286,6 +286,75 @@ test("betting rejects invalid setup, out-of-turn, unsupported, and invalid actio
   assert.throws(() => applyAction(complete, "a", { type: "call" }), RangeError);
 });
 
+test("applyAction rejects noncanonical or inconsistent rehydrated quantities", () => {
+  const state = createBettingState(["a", "b"]);
+  const malformedStates = [
+    { ...state, currentStake: "1" },
+    { ...state, currentStake: "01" },
+    { ...state, pot: "0" },
+    { ...state, pot: -1 },
+    { ...state, pot: 1 },
+    { ...state, commitments: { a: "0", b: 0 } },
+    { ...state, commitments: { a: -1, b: 0 }, pot: -1 },
+    { ...state, commitments: { a: 5, b: 0 } },
+    { ...state, commitments: { a: 0 } },
+    { ...state, commitments: { a: 0, b: 0, outsider: 0 } },
+  ];
+
+  for (const malformed of malformedStates) {
+    assert.throws(
+      () => applyAction(malformed, "a", { type: "call" }),
+      /invalid betting state/,
+    );
+  }
+});
+
+test("applyAction rejects incoherent pending players, turn, and aggressor", () => {
+  const state = createBettingState(["a", "b"]);
+  const malformedStates = [
+    { ...state, pendingPlayerIds: ["a", "a"] },
+    { ...state, pendingPlayerIds: ["a", "outsider"] },
+    { ...state, turnPlayerId: "b" },
+    { ...state, pendingPlayerIds: [], turnPlayerId: null },
+    {
+      ...state,
+      commitments: { a: 1, b: 0 },
+      pot: 1,
+      lastAggressorId: "a",
+    },
+    { ...state, lastAggressorId: "outsider" },
+  ];
+
+  for (const malformed of malformedStates) {
+    assert.throws(
+      () => applyAction(malformed, "a", { type: "call" }),
+      /invalid betting state/,
+    );
+  }
+});
+
+test("applyAction rejects incoherent completed rehydrated states", () => {
+  const initial = createBettingState(["a", "b"]);
+  const complete = applyAction(
+    applyAction(initial, "a", { type: "call" }),
+    "b",
+    { type: "call" },
+  );
+  const malformedStates = [
+    { ...complete, turnPlayerId: "a" },
+    { ...complete, pendingPlayerIds: ["a"], turnPlayerId: "a" },
+    { ...complete, commitments: { a: 1, b: 0 }, pot: 1 },
+    { ...complete, currentStake: 2 },
+  ];
+
+  for (const malformed of malformedStates) {
+    assert.throws(
+      () => applyAction(malformed, "a", { type: "call" }),
+      /invalid complete betting state/,
+    );
+  }
+});
+
 test("settleRound retains opposite obligations and appends one per loser", () => {
   const existing = [
     {
