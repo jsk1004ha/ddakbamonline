@@ -9,6 +9,8 @@ import {
 } from "react";
 import type { User } from "@supabase/supabase-js";
 
+import OnlineRoomGame, { createOnlineRound } from "@/components/online-room-game";
+
 import {
   canStartRoom,
   findFirstFreeSeat,
@@ -19,7 +21,7 @@ import {
   getSupabaseBrowserClient,
   isSupabaseConfigured,
 } from "@/lib/supabase/client";
-import type { Tables } from "@/lib/supabase/database.types";
+import type { Json, Tables } from "@/lib/supabase/database.types";
 
 type Profile = Tables<"profiles">;
 type Room = Tables<"game_rooms">;
@@ -225,7 +227,10 @@ export default function AccountRoomPanel() {
         const { data, error } = await supabase.auth.signUp({
           email: email.trim(),
           password,
-          options: { data: { display_name: cleanName } },
+          options: {
+            data: { display_name: cleanName },
+            emailRedirectTo: window.location.origin,
+          },
         });
         if (error) throw error;
         setNotice(data.session ? "가입과 로그인이 완료됐어요." : "가입 확인 메일을 보냈어요.");
@@ -357,20 +362,30 @@ export default function AccountRoomPanel() {
       return;
     }
     setBusy(true);
-    const { error } = await supabase
+    const onlineRound = createOnlineRound(
+      [...members]
+        .sort((left, right) => left.seat - right.seat)
+        .map((member) => member.user_id),
+    );
+    const { data, error } = await supabase
       .from("game_rooms")
       .update({
         status: "playing",
-        state: {
-          started_at: new Date().toISOString(),
-          player_ids: members.map((member) => member.user_id),
-        },
+        state: onlineRound as unknown as Json,
+        version: room.version + 1,
       })
-      .eq("id", room.id);
+      .eq("id", room.id)
+      .eq("version", room.version)
+      .select("id")
+      .maybeSingle();
     if (error) setNotice(errorMessage(error));
+    else if (!data) {
+      setNotice("참가자 상태가 바뀌었어요. 최신 방 상태에서 다시 시작해 주세요.");
+      await refreshRoom(room.id);
+    }
     else {
       await refreshRoom(room.id);
-      setNotice("모두 준비됐어요. 온라인 방을 시작 상태로 바꿨어요.");
+      setNotice("온라인 계정 대전을 시작했어요.");
     }
     setBusy(false);
   }
@@ -474,9 +489,20 @@ export default function AccountRoomPanel() {
           <div className="accountRoom__actions">
             {room.status === "waiting" && <button className={mine?.ready ? "accountRoom__ready is-ready" : "accountRoom__ready"} type="button" disabled={busy} onClick={() => void toggleReady()}>{mine?.ready ? "준비 완료" : "준비하기"}</button>}
             {room.host_id === user.id && room.status === "waiting" && <button className="accountRoom__primary" type="button" disabled={busy || !startable} onClick={() => void startRoom()}>4인까지 시작</button>}
-            <button className="accountRoom__ghost" type="button" disabled={busy} onClick={() => void leaveRoom()}>{room.host_id === user.id ? "방 닫기" : "나가기"}</button>
+            <button className="accountRoom__ghost" type="button" disabled={busy || room.status === "playing"} onClick={() => void leaveRoom()}>{room.status === "playing" ? "판 진행 중" : room.host_id === user.id ? "방 닫기" : "나가기"}</button>
           </div>
         </section>
+      )}
+
+      {room?.status === "playing" && (
+        <OnlineRoomGame
+          room={room}
+          names={names}
+          userId={user.id}
+          onRefreshRoom={refreshRoom}
+          onRefreshLedger={refreshLedger}
+          onNotice={setNotice}
+        />
       )}
 
       <section className="accountRoom__ledger" aria-labelledby="ledger-heading">
@@ -498,7 +524,7 @@ export default function AccountRoomPanel() {
 }
 
 function PanelStyles() {
-  return <style jsx>{`
+  return <style jsx global>{`
     .accountRoom{color:#f6ead2;background:linear-gradient(150deg,rgba(28,40,37,.97),rgba(13,20,20,.98));border:1px solid rgba(221,180,106,.28);border-radius:22px;padding:20px;box-shadow:0 24px 80px rgba(0,0,0,.32);font-family:var(--font-sans,Arial,sans-serif)}
     .accountRoom--empty{display:flex;gap:10px;flex-direction:column}.accountRoom--empty span,.accountRoom__muted{color:#aaafa8;font-size:13px}
     .accountRoom__header,.accountRoom__roomTitle,.accountRoom__ledgerTitle{display:flex;align-items:center;justify-content:space-between;gap:14px}.accountRoom small{display:block;color:#d5a65e;font-size:10px;font-weight:800;letter-spacing:.18em}.accountRoom h2,.accountRoom h3{margin:3px 0 0}.accountRoom h2{font-size:20px}.accountRoom h3{font-size:17px}

@@ -1,36 +1,53 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# 딱밤 섯다
 
-## Getting Started
+현금 대신 딱밤으로 즐기는 2~4인용 2장 섯다 웹 게임입니다. 로그인 없이 AI 계정과 즉시 플레이할 수 있고, Supabase 계정으로 로그인하면 코드 방과 계정별 딱밤 장부를 사용할 수 있습니다.
 
-First, run the development server:
+## 게임 규칙
+
+- 1월부터 10월까지 두 장씩인 20장 덱에서 각 계정이 두 장을 받습니다.
+- 행동은 `받기`와 `올리기`뿐입니다. 다이/포기는 없고 올리기 금액에는 임의 상한을 두지 않습니다.
+- 단독 승자가 나오면 각 패자가 최종 1인당 요구량만큼 승자에게 딱밤을 빚집니다. 동률이면 새 채무 없이 재경기합니다.
+- 장부는 좌석이 아니라 `때릴 계정 → 맞을 계정` 쌍으로 저장합니다. 반대 방향 채무도 상계하지 않습니다.
+- 실제 딱밤을 한 대 칠 때마다 해당 장부의 미지급 수와 두 계정의 누적 통계가 한 대씩 갱신됩니다.
+
+족보는 38광땡, 18광땡, 13광땡, 10땡~1땡, 알리, 독사, 구삥, 장삥, 장사, 세륙, 갑오, 8끗~1끗, 망통 순입니다. 잡이 계열 지역 규칙은 포함하지 않았습니다.
+
+## 로컬 실행
+
+Node.js 22 이상을 권장합니다.
 
 ```bash
+npm install
+cp .env.example .env.local
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+환경 변수:
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+```dotenv
+NEXT_PUBLIC_SUPABASE_URL=https://PROJECT.supabase.co
+NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=your-publishable-key
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+환경 변수가 없어도 로컬 AI 체험 게임은 동작합니다.
 
-## Learn More
+## 검증
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+npm test
+npm run lint
+npm run typecheck
+npm run build
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## 데이터베이스
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+`supabase/migrations`의 마이그레이션은 프로필, 2~4인 방, 방 참가 계정, 게임 결과, 방향성 딱밤 채무 테이블과 RLS 정책을 생성합니다.
 
-## Deploy on Vercel
+```bash
+npx supabase db push
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## 카드 이미지 출처
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+섯다 패 이미지는 [devMinkyu/Korean-Poker](https://github.com/devMinkyu/Korean-Poker)의 `Server/public/images/card`를 사용했습니다. 원본 저장소에 명시적인 라이선스 파일이 없어 재배포 전 권리 상태를 별도로 확인해야 합니다. 상세 출처는 [`public/cards/ATTRIBUTION.md`](public/cards/ATTRIBUTION.md)에 기록되어 있습니다.

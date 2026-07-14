@@ -50,6 +50,7 @@ export type Database = {
           max_players: number;
           status: "waiting" | "playing" | "showdown" | "closed";
           state: Json;
+          version: number;
           created_at: string;
           updated_at: string;
         };
@@ -60,6 +61,7 @@ export type Database = {
           max_players: number;
           status?: "waiting" | "playing" | "showdown" | "closed";
           state?: Json;
+          version?: number;
           created_at?: string;
           updated_at?: string;
         };
@@ -70,6 +72,7 @@ export type Database = {
           max_players?: number;
           status?: "waiting" | "playing" | "showdown" | "closed";
           state?: Json;
+          version?: number;
           created_at?: string;
           updated_at?: string;
         };
@@ -129,6 +132,7 @@ export type Database = {
           winner_id: string | null;
           player_ids: string[];
           stake: string | number;
+          round_token: string;
           created_at: string;
         };
         Insert: {
@@ -137,6 +141,7 @@ export type Database = {
           winner_id?: string | null;
           player_ids: string[];
           stake: string | number;
+          round_token?: string;
           created_at?: string;
         };
         Update: {
@@ -145,6 +150,7 @@ export type Database = {
           winner_id?: string | null;
           player_ids?: string[];
           stake?: string | number;
+          round_token?: string;
           created_at?: string;
         };
         Relationships: [

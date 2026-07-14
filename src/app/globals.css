@@ -1007,6 +1007,43 @@ button:disabled {
   font-size: 8px;
 }
 
+.online-account-zone {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.62fr) minmax(360px, 1.38fr);
+  gap: 22px;
+  align-items: start;
+  margin-top: 26px;
+  padding: 24px;
+  border: 1px solid rgba(210, 158, 79, 0.18);
+  border-radius: 26px;
+  background:
+    linear-gradient(135deg, rgba(18, 29, 26, 0.92), rgba(7, 13, 13, 0.95)),
+    repeating-linear-gradient(90deg, transparent 0 18px, rgba(255,255,255,.015) 18px 19px);
+}
+
+.online-account-intro {
+  position: sticky;
+  top: 22px;
+  padding: 14px 8px;
+}
+
+.online-account-intro h2 {
+  max-width: 310px;
+  margin: 10px 0 12px;
+  color: var(--ivory);
+  font-family: var(--font-serif), serif;
+  font-size: clamp(26px, 3vw, 42px);
+  line-height: 1.08;
+}
+
+.online-account-intro p {
+  max-width: 390px;
+  margin: 0;
+  color: #929d97;
+  font-size: 13px;
+  line-height: 1.75;
+}
+
 .site-footer {
   display: flex;
   min-height: 72px;
@@ -1215,6 +1252,18 @@ button:disabled {
 
   .ledger-panel {
     padding: 18px;
+  }
+}
+
+@media (max-width: 820px) {
+  .online-account-zone {
+    grid-template-columns: 1fr;
+    padding: 16px;
+  }
+
+  .online-account-intro {
+    position: static;
+    padding: 4px;
   }
 }
 

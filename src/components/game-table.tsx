@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useReducer, useState } from "react";
+import AccountRoomPanel from "@/components/account-room-panel";
 import {
   applyAction,
   compareHands,
@@ -528,6 +529,15 @@ export function GameTable() {
           onRecordHit={(obligationId) => dispatch({ type: "record-hit", obligationId })}
         />
       </div>
+
+      <section className="online-account-zone" aria-labelledby="online-account-title">
+        <div className="online-account-intro">
+          <span className="eyebrow">SUPABASE REALTIME</span>
+          <h2 id="online-account-title">실제 계정으로 4인까지</h2>
+          <p>회원가입 후 방 코드를 나누면 각자 자기 계정으로 같은 판에 들어옵니다. 딱밤 기록도 좌석이 아닌 계정 사이에 계속 남습니다.</p>
+        </div>
+        <AccountRoomPanel />
+      </section>
 
       <footer className="site-footer">
         <span>실제 금전이 오가지 않는 친선 게임입니다.</span>
