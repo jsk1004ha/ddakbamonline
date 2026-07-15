@@ -1,12 +1,20 @@
 "use client";
 
-import { type FormEvent, useRef, useState } from "react";
+import {
+  type FormEvent,
+  useEffect,
+  useReducer,
+  useRef,
+  useState,
+} from "react";
 
 import AppDialog from "@/components/app-dialog";
 import {
+  createOfflineEntryUiState,
   ledgerErrorMessage,
   normalizeDisplayName,
   normalizeOfflineHits,
+  reduceOfflineEntryUiState,
 } from "@/lib/ledger/offline-entry.mjs";
 import type {
   AddOfflineObligationInput,
@@ -77,27 +85,25 @@ export default function HitLedgerDialog({
 }: HitLedgerDialogProps) {
   const searchRequestRef = useRef(0);
   const submitRequestRef = useRef(0);
-  const [direction, setDirection] =
-    useState<AddOfflineObligationInput["direction"]>("i_hit");
-  const [query, setQuery] = useState("");
-  const [matches, setMatches] = useState<ProfileSearchResult[]>([]);
-  const [selectedProfile, setSelectedProfile] =
-    useState<ProfileSearchResult | null>(null);
-  const [hits, setHits] = useState("");
+  const queryInputRef = useRef<HTMLInputElement>(null);
+  const firstResultRef = useRef<HTMLButtonElement>(null);
+  const pendingFocusRef = useRef<"first-result" | "query" | null>(null);
+  const [entryState, dispatch] = useReducer(
+    reduceOfflineEntryUiState,
+    createOfflineEntryUiState(),
+  );
   const [searchBusy, setSearchBusy] = useState(false);
   const [submitBusy, setSubmitBusy] = useState(false);
-  const [hasSearched, setHasSearched] = useState(false);
-  const [localError, setLocalError] = useState("");
-  const [localNotice, setLocalNotice] = useState("");
 
-  const normalizedHits = normalizedHitsOrNull(hits);
+  const normalizedHits = normalizedHitsOrNull(entryState.hits);
   const submitDisabled =
     busy ||
     searchBusy ||
     submitBusy ||
-    !selectedProfile ||
+    !entryState.selectedProfile ||
     normalizedHits === null;
   const controlsBusy = busy || searchBusy || submitBusy;
+  const visibleError = entryState.localError || error;
   const remainingToDeliver = sumRemaining(
     obligations.filter((item) => item.creditor_id === userId),
   );
@@ -105,66 +111,82 @@ export default function HitLedgerDialog({
     obligations.filter((item) => item.debtor_id === userId),
   );
 
-  function resetEntryState() {
-    searchRequestRef.current += 1;
-    submitRequestRef.current += 1;
-    setDirection("i_hit");
-    setQuery("");
-    setMatches([]);
-    setSelectedProfile(null);
-    setHits("");
-    setSearchBusy(false);
-    setSubmitBusy(false);
-    setHasSearched(false);
-    setLocalError("");
-    setLocalNotice("");
-  }
+  useEffect(() => {
+    if (busy || searchBusy || submitBusy) return;
+    const focusTarget = pendingFocusRef.current;
+    if (!focusTarget) return;
+    pendingFocusRef.current = null;
+
+    if (focusTarget === "first-result") {
+      firstResultRef.current?.focus();
+    } else {
+      queryInputRef.current?.focus();
+    }
+  }, [
+    busy,
+    entryState.hasSearched,
+    entryState.localNotice,
+    entryState.matches,
+    searchBusy,
+    submitBusy,
+  ]);
 
   function handleClose() {
-    resetEntryState();
+    searchRequestRef.current += 1;
+    submitRequestRef.current += 1;
+    pendingFocusRef.current = null;
+    dispatch({
+      type: "reset",
+      requestToken: searchRequestRef.current,
+    });
+    setSearchBusy(false);
+    setSubmitBusy(false);
     onClose();
+  }
+
+  function handleQueryChange(query: string) {
+    const requestToken = ++searchRequestRef.current;
+    pendingFocusRef.current = null;
+    setSearchBusy(false);
+    dispatch({ type: "query_changed", query, requestToken });
   }
 
   async function handleSearch(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (controlsBusy) return;
 
-    const requestId = ++searchRequestRef.current;
-    setLocalError("");
-    setLocalNotice("");
-
     let normalizedQuery: string;
     try {
-      normalizedQuery = normalizeDisplayName(query);
+      normalizedQuery = normalizeDisplayName(entryState.query);
     } catch (error) {
-      setMatches([]);
-      setSelectedProfile(null);
-      setHasSearched(false);
-      setLocalError(
-        error instanceof Error
-          ? error.message
-          : "이름은 2~24자로 입력해 주세요.",
-      );
+      dispatch({
+        type: "validation_failed",
+        error:
+          error instanceof Error
+            ? error.message
+            : "이름은 2~24자로 입력해 주세요.",
+      });
       return;
     }
 
-    setMatches([]);
-    setSelectedProfile(null);
-    setHasSearched(false);
+    const requestToken = ++searchRequestRef.current;
+    dispatch({ type: "search_started", requestToken });
     setSearchBusy(true);
     try {
       const results = await onSearchProfiles(normalizedQuery);
-      if (searchRequestRef.current !== requestId) return;
-      setMatches(results);
-      setHasSearched(true);
+      if (searchRequestRef.current !== requestToken) return;
+      pendingFocusRef.current = results.length > 0 ? "first-result" : "query";
+      dispatch({ type: "search_succeeded", requestToken, matches: results });
     } catch (error) {
-      if (searchRequestRef.current !== requestId) return;
-      setMatches([]);
-      setSelectedProfile(null);
-      setHasSearched(true);
-      setLocalError(ledgerErrorMessage(error));
+      if (searchRequestRef.current !== requestToken) return;
+      pendingFocusRef.current = "query";
+      dispatch({
+        type: "search_failed",
+        requestToken,
+        error: ledgerErrorMessage(error),
+      });
     } finally {
-      if (searchRequestRef.current === requestId) {
+      if (searchRequestRef.current === requestToken) {
         setSearchBusy(false);
       }
     }
@@ -172,19 +194,21 @@ export default function HitLedgerDialog({
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    setLocalError("");
-    setLocalNotice("");
+    dispatch({ type: "feedback_cleared" });
 
-    if (!selectedProfile) {
-      setLocalError("함께 기록할 계정을 이름으로 찾아 선택해 주세요.");
+    if (!entryState.selectedProfile) {
+      dispatch({
+        type: "validation_failed",
+        error: "함께 기록할 계정을 이름으로 찾아 선택해 주세요.",
+      });
       return;
     }
 
     let normalizedHits: string;
     try {
-      normalizedHits = normalizeOfflineHits(hits);
+      normalizedHits = normalizeOfflineHits(entryState.hits);
     } catch (error) {
-      setLocalError(ledgerErrorMessage(error));
+      dispatch({ type: "validation_failed", error: ledgerErrorMessage(error) });
       return;
     }
 
@@ -193,21 +217,21 @@ export default function HitLedgerDialog({
     setSubmitBusy(true);
     try {
       await onAddOfflineObligation({
-        counterpartyId: selectedProfile.id,
-        direction,
+        counterpartyId: entryState.selectedProfile.id,
+        direction: entryState.direction,
         hits: normalizedHits,
       });
       if (submitRequestRef.current !== requestId) return;
-      setDirection("i_hit");
-      setQuery("");
-      setMatches([]);
-      setSelectedProfile(null);
-      setHits("");
-      setHasSearched(false);
-      setLocalNotice("오프라인 딱밤 빚을 양쪽 장부에 추가했어요.");
+      const requestToken = ++searchRequestRef.current;
+      pendingFocusRef.current = "query";
+      dispatch({
+        type: "submit_succeeded",
+        requestToken,
+        notice: "오프라인 딱밤 빚을 양쪽 장부에 추가했어요.",
+      });
     } catch (error) {
       if (submitRequestRef.current !== requestId) return;
-      setLocalError(ledgerErrorMessage(error));
+      dispatch({ type: "submit_failed", error: ledgerErrorMessage(error) });
     } finally {
       if (submitRequestRef.current === requestId) {
         setSubmitBusy(false);
@@ -262,9 +286,9 @@ export default function HitLedgerDialog({
           </div>
         </dl>
 
-        {error && (
+        {visibleError && (
           <p className="ledger-dialog__notice" role="alert">
-            {error}
+            {visibleError}
           </p>
         )}
 
@@ -285,8 +309,10 @@ export default function HitLedgerDialog({
                   type="radio"
                   name="offline-direction"
                   value="i_hit"
-                  checked={direction === "i_hit"}
-                  onChange={() => setDirection("i_hit")}
+                  checked={entryState.direction === "i_hit"}
+                  onChange={() =>
+                    dispatch({ type: "direction_changed", direction: "i_hit" })
+                  }
                 />
                 <span>내가 때릴</span>
               </label>
@@ -295,8 +321,10 @@ export default function HitLedgerDialog({
                   type="radio"
                   name="offline-direction"
                   value="i_owe"
-                  checked={direction === "i_owe"}
-                  onChange={() => setDirection("i_owe")}
+                  checked={entryState.direction === "i_owe"}
+                  onChange={() =>
+                    dispatch({ type: "direction_changed", direction: "i_owe" })
+                  }
                 />
                 <span>내가 맞을</span>
               </label>
@@ -308,20 +336,17 @@ export default function HitLedgerDialog({
               </label>
               <div>
                 <input
+                  ref={queryInputRef}
                   id="offline-profile-query"
                   type="search"
-                  value={query}
+                  value={entryState.query}
                   required
                   minLength={2}
                   maxLength={24}
                   autoComplete="off"
                   placeholder="이름으로 계정 찾기"
-                  disabled={controlsBusy}
-                  onChange={(event) => {
-                    setQuery(event.target.value);
-                    setLocalError("");
-                    setLocalNotice("");
-                  }}
+                  disabled={busy || submitBusy}
+                  onChange={(event) => handleQueryChange(event.target.value)}
                 />
                 <button type="submit" disabled={controlsBusy}>
                   {searchBusy ? "찾는 중…" : "검색"}
@@ -329,19 +354,18 @@ export default function HitLedgerDialog({
               </div>
             </form>
 
-            {matches.length > 0 && (
+            {entryState.matches.length > 0 && (
               <ul className="ledger-dialog__matches" aria-label="계정 검색 결과">
-                {matches.map((profile) => (
+                {entryState.matches.map((profile, index) => (
                   <li key={profile.id}>
                     <button
+                      ref={index === 0 ? firstResultRef : undefined}
                       type="button"
-                      aria-pressed={selectedProfile?.id === profile.id}
+                      aria-pressed={entryState.selectedProfile?.id === profile.id}
                       disabled={controlsBusy}
-                      onClick={() => {
-                        setSelectedProfile(profile);
-                        setLocalError("");
-                        setLocalNotice("");
-                      }}
+                      onClick={() =>
+                        dispatch({ type: "profile_selected", profile })
+                      }
                     >
                       <b>{profile.display_name}</b>
                       <span>@{profile.account_id}</span>
@@ -350,11 +374,23 @@ export default function HitLedgerDialog({
                 ))}
               </ul>
             )}
-            {hasSearched && matches.length === 0 && !searchBusy && (
-              <p className="ledger-dialog__noMatches" role="status">
-                일치하는 계정이 없어요. 이름을 다시 확인해 주세요.
-              </p>
-            )}
+            <p
+              className={`ledger-dialog__searchStatus${
+                entryState.hasSearched && entryState.matches.length === 0
+                  ? " ledger-dialog__searchStatus--empty"
+                  : ""
+              }`}
+              role="status"
+              aria-live="polite"
+            >
+              {searchBusy
+                ? "계정을 찾는 중이에요."
+                : entryState.hasSearched
+                  ? entryState.matches.length > 0
+                    ? `검색 결과 ${entryState.matches.length}개`
+                    : "일치하는 계정이 없어요. 이름을 다시 확인해 주세요."
+                  : ""}
+            </p>
 
             <form className="ledger-dialog__add" onSubmit={handleSubmit} noValidate>
               <label htmlFor="offline-hits">딱밤 횟수</label>
@@ -363,20 +399,21 @@ export default function HitLedgerDialog({
                 type="text"
                 inputMode="numeric"
                 pattern="[0-9]*"
-                value={hits}
+                value={entryState.hits}
                 placeholder="1 이상의 정수"
                 disabled={controlsBusy}
-                onChange={(event) => {
-                  setHits(event.target.value);
-                  setLocalError("");
-                  setLocalNotice("");
-                }}
+                onChange={(event) =>
+                  dispatch({ type: "hits_changed", hits: event.target.value })
+                }
                 onBlur={() => {
-                  if (hits.length === 0) return;
+                  if (entryState.hits.length === 0) return;
                   try {
-                    normalizeOfflineHits(hits);
+                    normalizeOfflineHits(entryState.hits);
                   } catch (error) {
-                    setLocalError(ledgerErrorMessage(error));
+                    dispatch({
+                      type: "validation_failed",
+                      error: ledgerErrorMessage(error),
+                    });
                   }
                 }}
               />
@@ -385,14 +422,9 @@ export default function HitLedgerDialog({
               </button>
             </form>
 
-            {localError && (
-              <p className="ledger-dialog__localError" role="alert">
-                {localError}
-              </p>
-            )}
-            {localNotice && (
+            {entryState.localNotice && (
               <p className="ledger-dialog__success" role="status">
-                {localNotice}
+                {entryState.localNotice}
               </p>
             )}
           </section>
@@ -457,9 +489,6 @@ export default function HitLedgerDialog({
       </div>
 
       <style jsx global>{`
-        .app-dialog--ledger {
-          width: min(940px, calc(100vw - 24px));
-        }
         .ledger-dialog {
           color: #f6ead2;
           font-family: var(--font-sans, Arial, sans-serif);
@@ -531,7 +560,6 @@ export default function HitLedgerDialog({
           font-weight: 850;
         }
         .ledger-dialog__notice,
-        .ledger-dialog__localError,
         .ledger-dialog__success {
           margin: 14px 0 0;
           padding: 10px 12px;
@@ -539,8 +567,7 @@ export default function HitLedgerDialog({
           font-size: 12px;
           line-height: 1.5;
         }
-        .ledger-dialog__notice,
-        .ledger-dialog__localError {
+        .ledger-dialog__notice {
           color: #ffe0ba;
           background: #34251c;
           border-left: 3px solid #e09b54;
@@ -624,6 +651,7 @@ export default function HitLedgerDialog({
         .ledger-dialog__search,
         .ledger-dialog__add {
           display: grid;
+          min-width: 0;
           margin-top: 16px;
         }
         .ledger-dialog__search > div {
@@ -670,6 +698,7 @@ export default function HitLedgerDialog({
           list-style: none;
         }
         .ledger-dialog__matches button {
+          min-width: 0;
           width: 100%;
           padding: 9px 11px;
           text-align: left;
@@ -687,6 +716,8 @@ export default function HitLedgerDialog({
         .ledger-dialog__matches b,
         .ledger-dialog__matches span {
           display: block;
+          min-width: 0;
+          overflow-wrap: anywhere;
         }
         .ledger-dialog__matches b {
           font-size: 12px;
@@ -696,9 +727,25 @@ export default function HitLedgerDialog({
           color: #8e9a94;
           font-size: 10px;
         }
-        .ledger-dialog__noMatches {
+        .ledger-dialog__searchStatus {
+          position: absolute;
+          width: 1px;
+          height: 1px;
+          padding: 0;
+          overflow: hidden;
+          clip: rect(0, 0, 0, 0);
+          white-space: nowrap;
+          border: 0;
+        }
+        .ledger-dialog__searchStatus--empty {
+          position: static;
+          width: auto;
+          height: auto;
           margin: 9px 0 0;
           padding: 12px;
+          overflow: visible;
+          clip: auto;
+          white-space: normal;
           color: #9ba7a1;
           text-align: center;
           background: #0a1513;
@@ -739,10 +786,13 @@ export default function HitLedgerDialog({
           min-width: 0;
         }
         .ledger-dialog__rowTitle {
+          min-width: 0;
           align-items: flex-start;
           gap: 7px;
         }
         .ledger-dialog__rowTitle b {
+          min-width: 0;
+          overflow-wrap: anywhere;
           font-size: 13px;
           line-height: 1.45;
         }
@@ -765,6 +815,7 @@ export default function HitLedgerDialog({
         .ledger-dialog__rowMeta {
           display: block;
           margin-top: 5px;
+          overflow-wrap: anywhere;
           color: #8e9994;
           font-size: 11px;
         }
@@ -782,6 +833,11 @@ export default function HitLedgerDialog({
         .ledger-dialog__list > li > button:hover:not(:disabled) {
           background: #4a321e;
           border-color: #e0a35c;
+        }
+        @media (min-width: 601px) {
+          .app-dialog--ledger {
+            width: min(940px, calc(100vw - 24px));
+          }
         }
         @media (max-width: 760px) {
           .ledger-dialog__content {

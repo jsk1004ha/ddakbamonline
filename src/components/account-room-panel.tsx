@@ -293,9 +293,6 @@ export default function AccountRoomPanel() {
       if (!isCurrentMutation(operation)) return;
     } catch (error) {
       const safeError = new Error(ledgerErrorMessage(error));
-      if (isCurrentMutation(operation)) {
-        setLedgerError(safeError.message);
-      }
       throw safeError;
     } finally {
       if (isCurrentMutation(operation)) {

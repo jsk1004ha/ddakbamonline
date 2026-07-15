@@ -74,3 +74,86 @@ export function mapOfflineParties(userId, counterpartyId, direction) {
   }
   throw new Error("딱밤 방향을 다시 선택해 주세요.");
 }
+
+export function createOfflineEntryUiState(searchRequestToken = 0) {
+  return {
+    direction: "i_hit",
+    query: "",
+    matches: [],
+    selectedProfile: null,
+    hits: "",
+    hasSearched: false,
+    localError: "",
+    localNotice: "",
+    searchRequestToken,
+  };
+}
+
+export function reduceOfflineEntryUiState(state, action) {
+  switch (action.type) {
+    case "direction_changed":
+      return { ...state, direction: action.direction };
+    case "query_changed":
+      return {
+        ...state,
+        query: action.query,
+        matches: [],
+        selectedProfile: null,
+        hasSearched: false,
+        localError: "",
+        localNotice: "",
+        searchRequestToken: action.requestToken,
+      };
+    case "hits_changed":
+      return {
+        ...state,
+        hits: action.hits,
+        localError: "",
+        localNotice: "",
+      };
+    case "search_started":
+      return {
+        ...state,
+        matches: [],
+        selectedProfile: null,
+        hasSearched: false,
+        localError: "",
+        localNotice: "",
+        searchRequestToken: action.requestToken,
+      };
+    case "search_succeeded":
+      if (action.requestToken !== state.searchRequestToken) return state;
+      return { ...state, matches: action.matches, hasSearched: true };
+    case "search_failed":
+      if (action.requestToken !== state.searchRequestToken) return state;
+      return {
+        ...state,
+        matches: [],
+        selectedProfile: null,
+        hasSearched: true,
+        localError: action.error,
+        localNotice: "",
+      };
+    case "profile_selected":
+      return {
+        ...state,
+        selectedProfile: action.profile,
+        localError: "",
+        localNotice: "",
+      };
+    case "feedback_cleared":
+      return { ...state, localError: "", localNotice: "" };
+    case "validation_failed":
+    case "submit_failed":
+      return { ...state, localError: action.error, localNotice: "" };
+    case "submit_succeeded":
+      return {
+        ...createOfflineEntryUiState(action.requestToken),
+        localNotice: action.notice,
+      };
+    case "reset":
+      return createOfflineEntryUiState(action.requestToken);
+    default:
+      return state;
+  }
+}

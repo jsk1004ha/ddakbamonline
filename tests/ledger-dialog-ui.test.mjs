@@ -13,6 +13,10 @@ const panelSource = await readFile(
   new URL("../src/components/account-room-panel.tsx", import.meta.url),
   "utf8",
 );
+const globalSource = await readFile(
+  new URL("../src/app/globals.css", import.meta.url),
+  "utf8",
+);
 const sourceFile = ts.createSourceFile(
   "hit-ledger-dialog.tsx",
   source,
@@ -20,8 +24,16 @@ const sourceFile = ts.createSourceFile(
   true,
   ts.ScriptKind.TSX,
 );
+const panelSourceFile = ts.createSourceFile(
+  "account-room-panel.tsx",
+  panelSource,
+  ts.ScriptTarget.Latest,
+  true,
+  ts.ScriptKind.TSX,
+);
+const styleSource = source.slice(source.indexOf("<style jsx global>"));
 
-function findFunction(name) {
+function findFunction(ast, name) {
   let match;
 
   function visit(node) {
@@ -32,7 +44,29 @@ function findFunction(name) {
     ts.forEachChild(node, visit);
   }
 
-  visit(sourceFile);
+  visit(ast);
+  return match;
+}
+
+function findCallCallback(ast, name) {
+  let match;
+
+  function visit(node) {
+    if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === name &&
+      node.arguments[0] &&
+      (ts.isArrowFunction(node.arguments[0]) ||
+        ts.isFunctionExpression(node.arguments[0]))
+    ) {
+      match = node.arguments[0];
+      return;
+    }
+    ts.forEachChild(node, visit);
+  }
+
+  visit(ast);
   return match;
 }
 
@@ -49,11 +83,28 @@ test("offers explicit direction and name-driven account selection", () => {
   assert.match(source, /@\{profile\.account_id\}/);
   assert.match(
     source,
-    /aria-pressed=\{selectedProfile\?\.id === profile\.id\}/,
+    /aria-pressed=\{entryState\.selectedProfile\?\.id === profile\.id\}/,
   );
   assert.doesNotMatch(
     source,
     /profile\.(?:email|avatar_url|created_at|updated_at|games_played|games_won)/,
+  );
+});
+
+test("uses the behavioral state helper that owns selection and stale results", () => {
+  assert.match(source, /createOfflineEntryUiState/);
+  assert.match(source, /reduceOfflineEntryUiState/);
+  assert.match(
+    source,
+    /useReducer\([\s\S]*reduceOfflineEntryUiState[\s\S]*createOfflineEntryUiState/,
+  );
+  assert.match(
+    source,
+    /type: "query_changed"[\s\S]*requestToken/,
+  );
+  assert.match(
+    source,
+    /searchRequestRef\.current \+= 1[\s\S]*type: "reset"/,
   );
 });
 
@@ -63,71 +114,81 @@ test("validates searches and canonical arbitrary-precision counts before callbac
     "900719925474099312345678901234567890",
   );
 
-  const search = findFunction("handleSearch");
-  const submit = findFunction("handleSubmit");
+  const search = findFunction(sourceFile, "handleSearch");
+  const submit = findFunction(sourceFile, "handleSubmit");
   assert.ok(search, "handleSearch must exist");
   assert.ok(submit, "handleSubmit must exist");
 
   const searchText = search.getText(sourceFile);
-  assert.match(searchText, /normalizeDisplayName\(query\)/);
+  assert.match(searchText, /normalizeDisplayName\(entryState\.query\)/);
   assert.match(searchText, /await onSearchProfiles\(normalizedQuery\)/);
   assert.ok(
-    searchText.indexOf("normalizeDisplayName(query)") <
+    searchText.indexOf("normalizeDisplayName(entryState.query)") <
       searchText.indexOf("onSearchProfiles(normalizedQuery)"),
   );
   assert.match(searchText, /ledgerErrorMessage\(error\)/);
 
   const submitText = submit.getText(sourceFile);
-  assert.match(submitText, /normalizeOfflineHits\(hits\)/);
+  assert.match(submitText, /normalizeOfflineHits\(entryState\.hits\)/);
   assert.match(
     submitText,
-    /await onAddOfflineObligation\(\{[\s\S]*counterpartyId: selectedProfile\.id,[\s\S]*direction,[\s\S]*hits: normalizedHits/,
+    /await onAddOfflineObligation\(\{[\s\S]*counterpartyId: entryState\.selectedProfile\.id,[\s\S]*direction: entryState\.direction,[\s\S]*hits: normalizedHits/,
   );
   assert.match(source, /inputMode="numeric"/);
   assert.match(
     source,
-    /const submitDisabled =[\s\S]*busy[\s\S]*searchBusy[\s\S]*submitBusy[\s\S]*!selectedProfile[\s\S]*normalizedHits === null/,
+    /const submitDisabled =[\s\S]*busy[\s\S]*searchBusy[\s\S]*submitBusy[\s\S]*!entryState\.selectedProfile[\s\S]*normalizedHits === null/,
   );
   assert.doesNotMatch(source, /id="offline-hits"[\s\S]{0,180}\bmax=/);
 });
 
-test("clears entry state only after confirmed success and safely retains failures", () => {
-  const submit = findFunction("handleSubmit");
-  const close = findFunction("handleClose");
+test("keeps failed callback errors in one dialog alert while preserving warnings", () => {
+  const submit = findFunction(sourceFile, "handleSubmit");
+  const addOffline = findFunction(panelSourceFile, "addOfflineObligation");
   assert.ok(submit);
-  assert.ok(close);
+  assert.ok(addOffline);
 
   const submitText = submit.getText(sourceFile);
-  const callbackIndex = submitText.indexOf("await onAddOfflineObligation");
-  for (const reset of [
-    'setQuery("")',
-    "setMatches([])",
-    "setSelectedProfile(null)",
-    'setHits("")',
-  ]) {
-    assert.ok(
-      submitText.indexOf(reset) > callbackIndex,
-      `${reset} must happen only after the callback resolves`,
-    );
-  }
+  assert.ok(
+    submitText.indexOf('type: "submit_succeeded"') >
+      submitText.indexOf("await onAddOfflineObligation"),
+  );
   assert.match(
     submitText,
-    /setLocalNotice\("오프라인 딱밤 빚을 양쪽 장부에 추가했어요\."\)/,
+    /catch \(error\)[\s\S]*type: "submit_failed"[\s\S]*ledgerErrorMessage\(error\)/,
   );
 
-  const catchClause = submit.body.statements.find(ts.isTryStatement)?.catchClause;
-  assert.ok(catchClause, "submission failures must be handled locally");
-  const catchText = catchClause.getText(sourceFile);
-  assert.match(catchText, /setLocalError\(ledgerErrorMessage\(error\)\)/);
-  assert.doesNotMatch(
-    catchText,
-    /setQuery\(""\)|setMatches\(\[\]\)|setSelectedProfile\(null\)|setHits\(""\)/,
-  );
+  const addOfflineText = addOffline.getText(panelSourceFile);
+  assert.doesNotMatch(addOfflineText, /setLedgerError\(safeError\.message\)/);
+  assert.match(addOfflineText, /throw safeError/);
+  assert.match(addOfflineText, /setLedgerError\(LEDGER_REFRESH_WARNING\)/);
 
-  assert.match(source, /className="ledger-dialog__localError" role="alert"/);
+  assert.match(source, /const visibleError = entryState\.localError \|\| error/);
+  assert.equal(source.match(/role="alert"/g)?.length, 1);
   assert.match(source, /className="ledger-dialog__success" role="status"/);
-  assert.match(close.getText(sourceFile), /resetEntryState\(\)[\s\S]*onClose\(\)/);
-  assert.match(panelSource, /<HitLedgerDialog[\s\S]*key=\{user\.id\}/);
+});
+
+test("announces search results and focuses only current completion targets", () => {
+  const search = findFunction(sourceFile, "handleSearch");
+  const focusEffect = findCallCallback(sourceFile, "useEffect");
+  assert.ok(search);
+  assert.ok(focusEffect);
+  const searchText = search.getText(sourceFile);
+
+  assert.match(source, /aria-live="polite"/);
+  assert.match(source, /ref=\{queryInputRef\}/);
+  assert.match(source, /firstResultRef/);
+  assert.match(source, /pendingFocusRef/);
+  assert.match(source, /queryInputRef\.current\?\.focus\(\)/);
+  assert.match(source, /firstResultRef\.current\?\.focus\(\)/);
+  assert.match(
+    focusEffect.getText(sourceFile),
+    /if \(busy \|\| searchBusy \|\| submitBusy\) return;[\s\S]*pendingFocusRef\.current/,
+  );
+  assert.match(
+    searchText,
+    /if \(searchRequestRef\.current !== requestToken\) return;[\s\S]*pendingFocusRef\.current/,
+  );
 });
 
 test("labels ledger provenance without changing two-party counters", () => {
@@ -140,15 +201,40 @@ test("labels ledger provenance without changing two-party counters", () => {
   assert.match(source, /상계하지 않고 각각 남아요/);
 });
 
-test("uses responsive columns, 44px controls, and visible focus treatment", () => {
+test("contains long ledger values and preserves the mobile width contract", () => {
   assert.match(
-    source,
-    /\.ledger-dialog__content\s*\{[\s\S]*display: grid;[\s\S]*grid-template-columns:/,
+    styleSource,
+    /\.ledger-dialog__matches button\s*\{[^}]*min-width: 0;[^}]*\}/,
   );
   assert.match(
-    source,
+    styleSource,
+    /\.ledger-dialog__matches b,[\s\S]*\.ledger-dialog__matches span\s*\{[^}]*min-width: 0;[^}]*overflow-wrap: anywhere;[^}]*\}/,
+  );
+  assert.match(
+    styleSource,
+    /\.ledger-dialog__rowTitle\s*\{[^}]*min-width: 0;[^}]*\}/,
+  );
+  assert.match(
+    styleSource,
+    /\.ledger-dialog__rowTitle b\s*\{[^}]*overflow-wrap: anywhere;[^}]*\}/,
+  );
+  assert.match(
+    styleSource,
+    /\.ledger-dialog__rowMeta\s*\{[^}]*overflow-wrap: anywhere;[^}]*\}/,
+  );
+
+  const desktopMediaIndex = styleSource.indexOf("@media (min-width: 601px)");
+  const wideRuleIndex = styleSource.indexOf(".app-dialog--ledger");
+  assert.ok(desktopMediaIndex >= 0);
+  assert.ok(wideRuleIndex > desktopMediaIndex);
+  assert.match(
+    globalSource,
+    /@media \(max-width: 600px\)[\s\S]*\.app-dialog--ledger\s*\{[\s\S]*width: 100%;/,
+  );
+  assert.match(
+    styleSource,
     /@media \(max-width: 760px\)[\s\S]*\.ledger-dialog__content\s*\{[\s\S]*grid-template-columns: 1fr;/,
   );
-  assert.match(source, /min-height: 44px;/);
-  assert.match(source, /:focus-visible/);
+  assert.match(styleSource, /min-height: 44px;/);
+  assert.match(styleSource, /:focus-visible/);
 });
