@@ -125,6 +125,29 @@ test("round start requires the host to occupy a serialized room seat", () => {
   );
 });
 
+test("member deletion shares the waiting-room lock with join and start", () => {
+  assert.match(
+    sql,
+    /create or replace function private\.lock_waiting_room_member_delete/i,
+  );
+  assert.match(
+    sql,
+    /lock_waiting_room_member_delete[\s\S]*?security definer[\s\S]*?set search_path = ''/i,
+  );
+  assert.match(
+    sql,
+    /from public\.game_rooms[\s\S]*?id = old\.room_id[\s\S]*?status = 'waiting'[\s\S]*?for update/is,
+  );
+  assert.match(
+    sql,
+    /create trigger room_members_lock_before_delete\s+before delete on public\.room_members/is,
+  );
+  assert.match(
+    sql,
+    /revoke all on function private\.lock_waiting_room_member_delete\(\)\s+from public, anon, authenticated/is,
+  );
+});
+
 test("public room JSON remains card-free and settlement is duplicate-safe", () => {
   assert.match(sql, /jsonb_build_object\(\s*'schema',\s*2/i);
   assert.doesNotMatch(sql, /jsonb_build_object\([\s\S]{0,1500}'hands'/i);

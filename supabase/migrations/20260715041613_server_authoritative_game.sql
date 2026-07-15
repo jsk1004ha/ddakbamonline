@@ -175,6 +175,36 @@ grant insert (code, host_id, max_players)
 revoke insert on public.game_results from authenticated;
 revoke insert, update on public.hit_obligations from authenticated;
 
+create or replace function private.lock_waiting_room_member_delete()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  locked_room_id uuid;
+begin
+  select room.id
+  into locked_room_id
+  from public.game_rooms as room
+  where room.id = old.room_id
+    and room.status = 'waiting'
+  for update;
+
+  if not found then
+    raise exception 'Room members can be removed only while the room is waiting';
+  end if;
+  return old;
+end;
+$$;
+
+create trigger room_members_lock_before_delete
+before delete on public.room_members
+for each row execute function private.lock_waiting_room_member_delete();
+
+revoke all on function private.lock_waiting_room_member_delete()
+  from public, anon, authenticated;
+
 create or replace function private.ordered_room_players(target_room uuid)
 returns table (player_id uuid, seat smallint)
 language sql
