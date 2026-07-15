@@ -59,6 +59,41 @@ button:disabled {
   cursor: not-allowed;
 }
 
+body[data-dialog-open="true"] {
+  overflow: hidden;
+}
+
+.app-dialog {
+  width: min(520px, calc(100vw - 24px));
+  max-height: min(88dvh, 760px);
+  margin: auto;
+  padding: 0;
+  overflow: auto;
+  color: #f6ead2;
+  background: #101f1c;
+  border: 1px solid rgba(221, 180, 106, 0.48);
+  border-radius: 22px;
+  box-shadow: 0 30px 100px rgba(0, 0, 0, 0.7);
+}
+
+.app-dialog::backdrop {
+  background: rgba(3, 10, 9, 0.78);
+  backdrop-filter: blur(8px);
+}
+
+.app-dialog__surface {
+  padding: 24px;
+}
+
+.app-dialog__close {
+  min-width: 44px;
+  min-height: 44px;
+  border: 0;
+  border-radius: 50%;
+  color: #f6ead2;
+  background: #21322e;
+}
+
 .app-shell {
   width: min(1600px, 100%);
   min-height: 100vh;
@@ -1264,6 +1299,16 @@ button:disabled {
   .online-account-intro {
     position: static;
     padding: 4px;
+  }
+}
+
+@media (max-width: 600px) {
+  .app-dialog--ledger {
+    width: 100%;
+    max-width: none;
+    max-height: 88dvh;
+    margin: auto 0 0;
+    border-radius: 22px 22px 0 0;
   }
 }
 
