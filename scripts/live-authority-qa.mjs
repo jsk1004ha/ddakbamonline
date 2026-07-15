@@ -45,6 +45,7 @@ function client({ captureOfflineRpc = false } = {}) {
 
 const host = client({ captureOfflineRpc: true });
 const guest = client();
+const observer = client();
 const admin = createClient(url, serviceRoleKey, {
   auth: { autoRefreshToken: false, persistSession: false },
 });
@@ -245,13 +246,19 @@ try {
 const qaSuffix = crypto.randomUUID().replaceAll("-", "").slice(0, 10);
 const hostAccountId = `qa_host_${qaSuffix}`;
 const guestAccountId = `qa_guest_${qaSuffix}`;
+const observerAccountId = `qa_watch_${qaSuffix}`;
 const provisionedHostId = await provisionQaUser(hostAccountId);
 const provisionedGuestId = await provisionQaUser(guestAccountId);
+const provisionedObserverId = await provisionQaUser(observerAccountId);
 const hostId = await signIn(host, hostAccountId);
 const guestId = await signIn(guest, guestAccountId);
+const observerId = await signIn(observer, observerAccountId);
 assert.equal(hostId, provisionedHostId);
 assert.equal(guestId, provisionedGuestId);
+assert.equal(observerId, provisionedObserverId);
 assert.notEqual(hostId, guestId);
+assert.notEqual(observerId, hostId);
+assert.notEqual(observerId, guestId);
 
 const largeOfflineHits = "900719925474099312345678901234567890";
 const offlineRemainingHits = (BigInt(largeOfflineHits) - 1n).toString();
@@ -292,8 +299,47 @@ assertExactNumericField(
 
 const hostOfflineRead = await readObligation(host, offlineObligation.id);
 const guestOfflineRead = await readObligation(guest, offlineObligation.id);
+const observerOfflineRead = await readObligation(observer, offlineObligation.id);
 assert.equal(hostOfflineRead.id, offlineObligation.id);
 assert.equal(guestOfflineRead.id, offlineObligation.id);
+assert.equal(observerOfflineRead.id, offlineObligation.id);
+
+const { data: iOweRpcData, error: iOweRpcError } = await host.rpc(
+  "add_offline_hit_obligation",
+  {
+    counterparty_id: guestId,
+    direction: "i_owe",
+    hits: "3",
+  },
+);
+assert.ifError(iOweRpcError);
+const iOweObligation = Array.isArray(iOweRpcData)
+  ? iOweRpcData[0]
+  : iOweRpcData;
+assert.ok(iOweObligation?.id);
+offlineObligationIds.push(iOweObligation.id);
+assert.equal(iOweObligation.created_by, hostId);
+assert.equal(iOweObligation.debtor_id, hostId);
+assert.equal(iOweObligation.creditor_id, guestId);
+assert.equal(
+  (await readObligation(host, iOweObligation.id)).id,
+  iOweObligation.id,
+);
+assert.equal(
+  (await readObligation(guest, iOweObligation.id)).id,
+  iOweObligation.id,
+);
+assert.equal(
+  (await readObligation(observer, iOweObligation.id)).id,
+  iOweObligation.id,
+);
+expectError(
+  await observer.rpc("record_physical_hit", {
+    obligation_id: iOweObligation.id,
+    expected_remaining: "3",
+  }),
+  "third-party hit recording",
+);
 
 const exactOfflineRead = await host
   .from("hit_obligations")
@@ -310,6 +356,17 @@ const profilesAfterOffline = await Promise.all([
   readProfileCounters(guest, guestId),
 ]);
 assert.deepEqual(profilesAfterOffline, profilesBeforeOffline);
+
+const { data: iOweHitResult, error: iOweHitError } = await guest.rpc(
+  "record_physical_hit",
+  {
+    obligation_id: iOweObligation.id,
+    expected_remaining: "3",
+  },
+);
+assert.ifError(iOweHitError);
+assert.equal(String(iOweHitResult.remainingHits), "2");
+assert.equal(Number(iOweHitResult.deliveredHits), 1);
 
 expectRejectedOfflineRpc(
   await host.rpc("add_offline_hit_obligation", {
@@ -638,6 +695,10 @@ console.log(
     offlineInvalidInputsRejected: 3,
     offlineDirectWritesRejected: 2,
     offlinePhysicalHitRecorded: true,
+    globalLedgerVisibleToObserver: true,
+    iOweDirectionVerified: true,
+    thirdPartyHitRejected: true,
+    iOwePhysicalHitRecorded: true,
   }),
 );
 } catch (error) {

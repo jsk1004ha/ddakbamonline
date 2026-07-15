@@ -70,6 +70,19 @@ test("both offline parties see the row without changing profile counters", () =>
   assert.match(script, /assert\.equal\(guestOfflineRead\.id,\s*offlineObligation\.id\)/);
 });
 
+test("live QA covers global reads and i_owe authority", () => {
+  assert.match(script, /const observer = client\(\)/);
+  assert.match(script, /direction:\s*"i_owe"/);
+  assert.match(script, /readObligation\(observer,\s*iOweObligation\.id\)/);
+  assert.match(
+    script,
+    /observer\.rpc\(\s*"record_physical_hit"/,
+  );
+  assert.match(script, /globalLedgerVisibleToObserver:\s*true/);
+  assert.match(script, /iOweDirectionVerified:\s*true/);
+  assert.match(script, /thirdPartyHitRejected:\s*true/);
+});
+
 test("offline negative cases preserve the RPC-only insertion boundary", () => {
   assert.match(
     script,
@@ -157,6 +170,9 @@ test("offline IDs are deleted first and the summary exposes only safe checks", (
   assert.match(summary, /offlineInvalidInputsRejected:\s*3/);
   assert.match(summary, /offlineDirectWritesRejected:\s*2/);
   assert.match(summary, /offlinePhysicalHitRecorded:\s*true/);
+  assert.match(summary, /globalLedgerVisibleToObserver:\s*true/);
+  assert.match(summary, /iOweDirectionVerified:\s*true/);
+  assert.match(summary, /thirdPartyHitRejected:\s*true/);
   assert.doesNotMatch(
     summary,
     /password|secret|token|key|accountId|userId|roomId|obligationId/i,
