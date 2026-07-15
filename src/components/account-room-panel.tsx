@@ -1,14 +1,11 @@
 "use client";
 
-import {
-  type FormEvent,
-  useCallback,
-  useEffect,
-  useMemo,
-  useState,
-} from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import type { User } from "@supabase/supabase-js";
 
+import AccountAuthDialog, {
+  type AuthPayload,
+} from "@/components/account-auth-dialog";
 import OnlineRoomGame, { createOnlineRound } from "@/components/online-room-game";
 
 import {
@@ -55,10 +52,9 @@ export default function AccountRoomPanel() {
   const [members, setMembers] = useState<Member[]>([]);
   const [names, setNames] = useState<Record<string, string>>({});
   const [obligations, setObligations] = useState<Obligation[]>([]);
-  const [authMode, setAuthMode] = useState<"signin" | "signup">("signin");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [displayName, setDisplayName] = useState("");
+  const [authOpen, setAuthOpen] = useState(false);
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authError, setAuthError] = useState("");
   const [roomCode, setRoomCode] = useState("");
   const [maxPlayers, setMaxPlayers] = useState(4);
   const [busy, setBusy] = useState(false);
@@ -155,10 +151,21 @@ export default function AccountRoomPanel() {
     if (!supabase) return;
     let active = true;
     supabase.auth.getSession().then(({ data }) => {
-      if (active) setUser(data.session?.user ?? null);
+      if (!active) return;
+      const nextUser = data.session?.user ?? null;
+      setUser(nextUser);
+      if (nextUser) {
+        setAuthOpen(false);
+        setAuthError("");
+      }
     });
     const { data } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user ?? null);
+      const nextUser = session?.user ?? null;
+      setUser(nextUser);
+      if (nextUser) {
+        setAuthOpen(false);
+        setAuthError("");
+      }
       if (!session) {
         setProfile(null);
         setRoom(null);
@@ -213,40 +220,37 @@ export default function AccountRoomPanel() {
     };
   }, [refreshLedger, refreshRoom, room, supabase, user]);
 
-  async function handleAuth(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function handleAuth(payload: AuthPayload) {
     if (!supabase) return;
-    setBusy(true);
-    setNotice("");
+    setAuthBusy(true);
+    setAuthError("");
     try {
-      if (authMode === "signup") {
-        const cleanName = displayName.trim();
+      if (payload.mode === "signup") {
+        const cleanName = payload.displayName.trim();
         if (cleanName.length < 2 || cleanName.length > 24) {
           throw new Error("닉네임은 2~24자로 입력해 주세요.");
         }
         const { data, error } = await supabase.auth.signUp({
-          email: email.trim(),
-          password,
+          email: payload.email.trim(),
+          password: payload.password,
           options: {
             data: { display_name: cleanName },
             emailRedirectTo: window.location.origin,
           },
         });
         if (error) throw error;
-        setNotice(data.session ? "가입과 로그인이 완료됐어요." : "가입 확인 메일을 보냈어요.");
+        if (!data.session) setAuthError("가입 확인 메일을 보냈어요.");
       } else {
         const { error } = await supabase.auth.signInWithPassword({
-          email: email.trim(),
-          password,
+          email: payload.email.trim(),
+          password: payload.password,
         });
         if (error) throw error;
-        setNotice("로그인했어요.");
       }
-      setPassword("");
     } catch (error) {
-      setNotice(errorMessage(error));
+      setAuthError(errorMessage(error));
     } finally {
-      setBusy(false);
+      setAuthBusy(false);
     }
   }
 
@@ -282,7 +286,7 @@ export default function AccountRoomPanel() {
     }
   }
 
-  async function joinRoom(event: FormEvent<HTMLFormElement>) {
+  async function joinRoom(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!supabase || !user) return;
     const code = normalizeRoomCode(roomCode);
@@ -420,35 +424,29 @@ export default function AccountRoomPanel() {
     );
   }
 
-  if (!user) {
-    return (
-      <aside className="accountRoom">
-        <header className="accountRoom__header">
-          <div><small>DDACKBAM ID</small><h2>계정으로 이어서 하기</h2></div>
-          <div className="accountRoom__tabs" role="tablist" aria-label="계정 메뉴">
-            <button type="button" role="tab" aria-selected={authMode === "signin"} onClick={() => setAuthMode("signin")}>로그인</button>
-            <button type="button" role="tab" aria-selected={authMode === "signup"} onClick={() => setAuthMode("signup")}>회원가입</button>
-          </div>
-        </header>
-        <form className="accountRoom__auth" onSubmit={handleAuth}>
-          {authMode === "signup" && (
-            <label>닉네임<input value={displayName} onChange={(event) => setDisplayName(event.target.value)} minLength={2} maxLength={24} required autoComplete="nickname" /></label>
-          )}
-          <label>이메일<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} required autoComplete="email" /></label>
-          <label>비밀번호<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} minLength={6} required autoComplete={authMode === "signup" ? "new-password" : "current-password"} /></label>
-          <button className="accountRoom__primary" disabled={busy}>{busy ? "처리 중…" : authMode === "signup" ? "딱밤 계정 만들기" : "로그인"}</button>
-        </form>
-        {notice && <p className="accountRoom__notice" role="status">{notice}</p>}
-        <PanelStyles />
-      </aside>
-    );
-  }
-
-  const mine = members.find((member) => member.user_id === user.id);
+  const mine = user
+    ? members.find((member) => member.user_id === user.id)
+    : undefined;
   const startable = canStartRoom(members, room?.max_players ?? 4);
 
   return (
-    <aside className="accountRoom">
+    <>
+      <aside className="accountRoom">
+        {!user ? (
+          <section className="online-shell__gate">
+            <span className="eyebrow">SUPABASE REALTIME</span>
+            <h1>로그인이 필요해요</h1>
+            <p>방을 만들거나 참가하려면 딱밤 계정으로 로그인해 주세요.</p>
+            <button
+              type="button"
+              className="accountRoom__primary"
+              onClick={() => setAuthOpen(true)}
+            >
+              로그인하고 시작
+            </button>
+          </section>
+        ) : (
+          <>
       <header className="accountRoom__header">
         <div><small>ACCOUNT LEDGER</small><h2>{profile?.display_name ?? user.email ?? "플레이어"}</h2></div>
         <button className="accountRoom__ghost" type="button" disabled={busy} onClick={() => void supabase.auth.signOut()}>로그아웃</button>
@@ -518,8 +516,18 @@ export default function AccountRoomPanel() {
       </section>
 
       {notice && <p className="accountRoom__notice" role="status">{notice}</p>}
-      <PanelStyles />
-    </aside>
+          </>
+        )}
+        <PanelStyles />
+      </aside>
+      <AccountAuthDialog
+        open={authOpen}
+        busy={authBusy}
+        error={authError}
+        onClose={() => setAuthOpen(false)}
+        onSubmit={handleAuth}
+      />
+    </>
   );
 }
 
@@ -527,10 +535,10 @@ function PanelStyles() {
   return <style jsx global>{`
     .accountRoom{color:#f6ead2;background:linear-gradient(150deg,rgba(28,40,37,.97),rgba(13,20,20,.98));border:1px solid rgba(221,180,106,.28);border-radius:22px;padding:20px;box-shadow:0 24px 80px rgba(0,0,0,.32);font-family:var(--font-sans,Arial,sans-serif)}
     .accountRoom--empty{display:flex;gap:10px;flex-direction:column}.accountRoom--empty span,.accountRoom__muted{color:#aaafa8;font-size:13px}
-    .accountRoom__header,.accountRoom__roomTitle,.accountRoom__ledgerTitle{display:flex;align-items:center;justify-content:space-between;gap:14px}.accountRoom small{display:block;color:#d5a65e;font-size:10px;font-weight:800;letter-spacing:.18em}.accountRoom h2,.accountRoom h3{margin:3px 0 0}.accountRoom h2{font-size:20px}.accountRoom h3{font-size:17px}
-    .accountRoom button,.accountRoom input,.accountRoom select{font:inherit}.accountRoom button{cursor:pointer}.accountRoom button:disabled{cursor:not-allowed;opacity:.46}
+    .accountRoom__header,.accountRoom__roomTitle,.accountRoom__ledgerTitle{display:flex;align-items:center;justify-content:space-between;gap:14px}.accountRoom small,.auth-dialog small{display:block;color:#d5a65e;font-size:10px;font-weight:800;letter-spacing:.18em}.accountRoom h2,.accountRoom h3,.auth-dialog h2{margin:3px 0 0}.accountRoom h2,.auth-dialog h2{font-size:20px}.accountRoom h3{font-size:17px}
+    .accountRoom button,.accountRoom input,.accountRoom select,.auth-dialog button,.auth-dialog input,.auth-dialog select{font:inherit}.accountRoom button,.auth-dialog button{cursor:pointer}.accountRoom button:disabled,.auth-dialog button:disabled{cursor:not-allowed;opacity:.46}
     .accountRoom__tabs{display:flex;padding:3px;background:#0c1413;border-radius:10px}.accountRoom__tabs button{border:0;background:transparent;color:#929b96;padding:7px 9px;border-radius:7px;font-size:12px}.accountRoom__tabs button[aria-selected=true]{background:#2a3c36;color:#fff}
-    .accountRoom__auth{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:16px}.accountRoom__auth label:first-child:nth-last-child(4){grid-column:1/-1}.accountRoom label{color:#b8c0bb;font-size:11px;font-weight:700}.accountRoom input,.accountRoom select{width:100%;box-sizing:border-box;margin-top:5px;padding:10px 11px;color:#f8eedb;background:#101b19;border:1px solid #34443f;border-radius:10px;outline:none}.accountRoom input:focus,.accountRoom select:focus{border-color:#d7a95e;box-shadow:0 0 0 3px rgba(215,169,94,.12)}
+    .accountRoom__auth{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:16px}.accountRoom__auth label:first-child:nth-last-child(4){grid-column:1/-1}.accountRoom label,.auth-dialog label{color:#b8c0bb;font-size:11px;font-weight:700}.accountRoom input,.accountRoom select,.auth-dialog input,.auth-dialog select{width:100%;box-sizing:border-box;margin-top:5px;padding:10px 11px;color:#f8eedb;background:#101b19;border:1px solid #34443f;border-radius:10px;outline:none}.accountRoom input:focus,.accountRoom select:focus,.auth-dialog input:focus,.auth-dialog select:focus{border-color:#d7a95e;box-shadow:0 0 0 3px rgba(215,169,94,.12)}
     .accountRoom__primary,.accountRoom__ghost,.accountRoom__ready{border-radius:10px;padding:10px 13px;font-weight:800}.accountRoom__primary{border:1px solid #e1b56b;background:linear-gradient(#e1b56b,#b97a32);color:#20170d}.accountRoom__ghost{border:1px solid #465650;background:transparent;color:#cbd2ce}.accountRoom__ready{border:1px solid #52635d;background:#20302c;color:#c8d1cc}.accountRoom__ready.is-ready{border-color:#65c6a0;background:#174636;color:#bff4dc}
     .accountRoom__stats{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin:15px 0}.accountRoom__stats span{padding:9px 5px;text-align:center;background:#101a18;border-radius:9px;color:#929b96;font-size:10px}.accountRoom__stats b{display:block;color:#f2d7a7;font-size:15px}
     .accountRoom__lobby,.accountRoom__room,.accountRoom__ledger{padding-top:15px;margin-top:15px;border-top:1px solid rgba(221,180,106,.17)}.accountRoom__create{display:grid;grid-template-columns:110px 1fr;gap:8px;margin-top:12px;align-items:end}.accountRoom__join{display:grid;grid-template-columns:1fr auto;gap:8px;margin-top:10px}.accountRoom__join label{grid-column:1/-1}.accountRoom__join input{margin:0;text-transform:uppercase;letter-spacing:.16em;font-weight:900}
