@@ -169,6 +169,23 @@ test("searches other profiles with a literal safe pattern and narrow result shap
   assert.equal(limit?.args[0]?.getText(sourceFile), "8");
 });
 
+test("loads and subscribes to one authenticated global ledger", () => {
+  const refresh = findFunction("refreshLedger");
+  assert.ok(refresh, "refreshLedger must exist");
+  const refreshText = refresh.getText(sourceFile);
+  assert.match(
+    refreshText,
+    /\.from\("hit_obligations"\)[\s\S]*\.select\("\*"\)[\s\S]*\.order\("created_at"/,
+  );
+  assert.doesNotMatch(refreshText, /\.or\(/);
+
+  assert.equal(source.match(/table: "hit_obligations"/g)?.length, 1);
+  assert.doesNotMatch(
+    source,
+    /table: "hit_obligations", filter:/,
+  );
+});
+
 test("normalizes offline hits before using only the authenticated creation RPC", () => {
   const addFunction = findFunction("addOfflineObligation");
   assert.ok(addFunction, "addOfflineObligation must exist");
@@ -214,7 +231,24 @@ test("normalizes offline hits before using only the authenticated creation RPC",
       functionText.indexOf('.rpc("add_offline_hit_obligation"'),
   );
   assert.match(functionText, /if \(!isCurrentMutation\(operation\)\) return/);
-  assert.match(functionText, /await refreshAccount\(actorId, scope\)/);
+  assert.match(
+    functionText,
+    /const \{ data, error \} = await client\.rpc\("add_offline_hit_obligation"/,
+  );
+  assert.match(
+    functionText,
+    /setObligations\(\(current\) => mergeObligationById\(current, created\)\)/,
+  );
+  assert.match(
+    functionText,
+    /await loadProfiles\(\[created\.debtor_id, created\.creditor_id\], scope\)/,
+  );
+  assert.match(functionText, /await refreshLedger\(scope\)/);
+  assert.ok(
+    functionText.indexOf("mergeObligationById") <
+      functionText.indexOf("await refreshLedger(scope)"),
+  );
+  assert.doesNotMatch(functionText, /await refreshAccount\(actorId, scope\)/);
   assert.match(functionText, /LEDGER_REFRESH_WARNING/);
   assert.match(
     functionText,

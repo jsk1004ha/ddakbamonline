@@ -13,6 +13,7 @@ import { accountIdEmail, normalizeAccountId } from "@/lib/auth/account-id";
 import {
   buildProfileSearchPattern,
   ledgerErrorMessage,
+  mergeObligationById,
   normalizeDisplayName,
   normalizeOfflineHits,
 } from "@/lib/ledger/offline-entry.mjs";
@@ -149,13 +150,12 @@ export default function AccountRoomPanel() {
   );
 
   const refreshLedger = useCallback(
-    async (accountId: string, scope?: AccountScope) => {
+    async (scope?: AccountScope) => {
       if (!supabase) return;
       const { data, error } = await retryTransientJwtRequest(() =>
         supabase
           .from("hit_obligations")
           .select("*")
-          .or(`debtor_id.eq.${accountId},creditor_id.eq.${accountId}`)
           .order("created_at", { ascending: false }),
       );
       if (scope && !isActiveAccount(scope)) return;
@@ -207,7 +207,7 @@ export default function AccountRoomPanel() {
             .limit(1)
             .maybeSingle(),
         ),
-        refreshLedger(accountId, scope),
+        refreshLedger(scope),
       ]);
       if (scope && !isActiveAccount(scope)) return;
       if (profileResponse.error) throw profileResponse.error;
@@ -281,16 +281,23 @@ export default function AccountRoomPanel() {
     setLedgerError("");
     try {
       const normalizedHits = normalizeOfflineHits(input.hits);
-      const { error } = await client.rpc("add_offline_hit_obligation", {
+      const { data, error } = await client.rpc("add_offline_hit_obligation", {
         counterparty_id: input.counterpartyId,
         direction: input.direction,
         hits: normalizedHits,
       });
       if (error) throw new Error(ledgerErrorMessage(error));
       if (!isCurrentMutation(operation)) return;
+      const created = Array.isArray(data) ? data[0] : data;
+      if (!created) {
+        throw new Error("등록된 딱밤 빚을 확인하지 못했어요.");
+      }
+      setObligations((current) => mergeObligationById(current, created));
 
       try {
-        await refreshAccount(actorId, scope);
+        await loadProfiles([created.debtor_id, created.creditor_id], scope);
+        if (!isCurrentMutation(operation)) return;
+        await refreshLedger(scope);
       } catch {
         if (isCurrentMutation(operation)) {
           setLedgerError(LEDGER_REFRESH_WARNING);
@@ -373,13 +380,8 @@ export default function AccountRoomPanel() {
       .channel(`account-room-${user.id}-${room?.id ?? "none"}`)
       .on(
         "postgres_changes",
-        { event: "*", schema: "public", table: "hit_obligations", filter: `debtor_id=eq.${user.id}` },
-        () => void refreshLedger(user.id, scope),
-      )
-      .on(
-        "postgres_changes",
-        { event: "*", schema: "public", table: "hit_obligations", filter: `creditor_id=eq.${user.id}` },
-        () => void refreshLedger(user.id, scope),
+        { event: "*", schema: "public", table: "hit_obligations" },
+        () => void refreshLedger(scope),
       );
     if (room) {
       channel
