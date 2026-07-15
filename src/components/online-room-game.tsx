@@ -13,6 +13,10 @@ import {
   type EvaluatedHand,
   type ExactInteger,
 } from "@/lib/game/engine.mjs";
+import {
+  COMPACT_HAND_RANKING,
+  handRankingGroup,
+} from "@/lib/game/hand-ranking.mjs";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import type { Json, Tables } from "@/lib/supabase/database.types";
 
@@ -118,6 +122,11 @@ export default function OnlineRoomGame({
   const [busy, setBusy] = useState(false);
   const recording = useRef(new Set<string>());
   const round = readOnlineRound(room.state);
+  const myHand = round?.hands[userId];
+  const myEvaluation = myHand ? evaluateHand(myHand) : null;
+  const currentRankingGroup = myEvaluation
+    ? handRankingGroup(myEvaluation.name)
+    : null;
 
   const commitRound = useCallback(
     async (nextRound: OnlineRoundState) => {
@@ -233,6 +242,32 @@ export default function OnlineRoomGame({
       });
   }, [onNotice, persistResult, room.host_id, round, userId]);
 
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const gameWindow = window as Window & {
+      render_game_to_text?: () => string;
+      advanceTime?: (milliseconds: number) => void;
+    };
+    gameWindow.render_game_to_text = () => JSON.stringify({
+      mode: "online",
+      roundNumber: round?.roundNumber ?? null,
+      phase: round?.phase ?? "waiting",
+      userId,
+      myHandName: myEvaluation?.name ?? null,
+      turnPlayerId: round?.betting.turnPlayerId ?? null,
+      currentStake: round ? String(round.betting.currentStake) : null,
+      playerIds: round?.playerIds ?? [],
+    });
+    gameWindow.advanceTime = (milliseconds: number) => {
+      void milliseconds;
+      return undefined;
+    };
+    return () => {
+      delete gameWindow.render_game_to_text;
+      delete gameWindow.advanceTime;
+    };
+  }, [myEvaluation?.name, round, userId]);
+
   async function act(action: { type: "call" } | { type: "raise"; amount: ExactInteger }) {
     if (!round || round.phase !== "betting" || round.betting.turnPlayerId !== userId) return;
     try {
@@ -297,6 +332,19 @@ export default function OnlineRoomGame({
                   <img key={card.id} src={reveal ? `/cards/${card.imageId}.png` : "/cards/back.png"} width="72" height="106" alt={reveal ? `${card.month}월 패` : "뒤집힌 패"} />
                 ))}
               </div>
+              {playerId === userId && myEvaluation && (
+                <details className="onlineGame__rankRollup">
+                  <summary><strong>내 패 · {myEvaluation.name}</strong><span>족보 보기</span></summary>
+                  <div className="onlineGame__rankList">
+                    {COMPACT_HAND_RANKING.map((group) => (
+                      <div key={group.id} className={currentRankingGroup === group.id ? "is-current" : ""}>
+                        <b>{group.label}</b>
+                        <span>{group.summary}</span>
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              )}
               {round.phase === "showdown" && <b className="onlineGame__hand">{round.evaluations[playerId]?.name}</b>}
             </article>
           );
