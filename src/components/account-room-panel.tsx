@@ -9,6 +9,7 @@ import AccountAuthDialog, {
 import HitLedgerDialog from "@/components/hit-ledger-dialog";
 import OnlineRoomGame, { createOnlineRound } from "@/components/online-room-game";
 
+import { accountIdEmail } from "@/lib/auth/account-id";
 import {
   canStartRoom,
   findFirstFreeSeat,
@@ -28,11 +29,20 @@ type Obligation = Tables<"hit_obligations">;
 
 function errorMessage(error: unknown): string {
   if (!(error instanceof Error)) return "요청을 처리하지 못했어요. 잠시 후 다시 시도해 주세요.";
-  if (/invalid login credentials/i.test(error.message)) return "이메일 또는 비밀번호가 맞지 않아요.";
-  if (/already registered/i.test(error.message)) return "이미 가입된 이메일이에요.";
   if (/room is full|duplicate key/i.test(error.message)) return "방이 가득 찼거나 자리가 방금 선택됐어요.";
   if (/room is not available/i.test(error.message)) return "입장할 수 없는 방이에요.";
   return error.message;
+}
+
+function authErrorMessage(error: unknown): string {
+  if (!(error instanceof Error)) return "계정 요청을 처리하지 못했어요. 잠시 후 다시 시도해 주세요.";
+  if (/invalid login credentials/i.test(error.message)) return "아이디 또는 비밀번호가 맞지 않아요.";
+  if (/already registered|user already exists/i.test(error.message)) return "이미 사용 중인 아이디예요.";
+  if (/password.*(?:at least|characters)|weak password/i.test(error.message)) {
+    return "비밀번호는 8자 이상으로 입력해 주세요.";
+  }
+  if (/^(?:아이디|닉네임)/.test(error.message)) return error.message;
+  return "계정 요청을 처리하지 못했어요. 잠시 후 다시 시도해 주세요.";
 }
 
 export default function AccountRoomPanel() {
@@ -46,6 +56,7 @@ export default function AccountRoomPanel() {
   const [authOpen, setAuthOpen] = useState(false);
   const [authBusy, setAuthBusy] = useState(false);
   const [authError, setAuthError] = useState("");
+  const [authNotice, setAuthNotice] = useState("");
   const [ledgerOpen, setLedgerOpen] = useState(false);
   const [ledgerBusy, setLedgerBusy] = useState(false);
   const [ledgerError, setLedgerError] = useState("");
@@ -218,31 +229,34 @@ export default function AccountRoomPanel() {
     if (!supabase) return;
     setAuthBusy(true);
     setAuthError("");
+    setAuthNotice("");
     try {
+      const email = accountIdEmail(payload.loginId);
       if (payload.mode === "signup") {
         const cleanName = payload.displayName.trim();
         if (cleanName.length < 2 || cleanName.length > 24) {
           throw new Error("닉네임은 2~24자로 입력해 주세요.");
         }
         const { data, error } = await supabase.auth.signUp({
-          email: payload.email.trim(),
+          email,
           password: payload.password,
           options: {
             data: { display_name: cleanName },
-            emailRedirectTo: window.location.origin,
           },
         });
         if (error) throw error;
-        if (!data.session) setAuthError("가입 확인 메일을 보냈어요.");
+        if (!data.session) {
+          setAuthNotice("가입이 완료됐어요. 같은 아이디로 로그인해 주세요.");
+        }
       } else {
         const { error } = await supabase.auth.signInWithPassword({
-          email: payload.email.trim(),
+          email,
           password: payload.password,
         });
         if (error) throw error;
       }
     } catch (error) {
-      setAuthError(errorMessage(error));
+      setAuthError(authErrorMessage(error));
     } finally {
       setAuthBusy(false);
     }
@@ -454,7 +468,7 @@ export default function AccountRoomPanel() {
         ) : (
           <>
       <header className="accountRoom__header">
-        <div><small>ACCOUNT LEDGER</small><h2>{profile?.display_name ?? user.email ?? "플레이어"}</h2></div>
+        <div><small>ACCOUNT LEDGER</small><h2>{profile?.display_name ?? "플레이어"}</h2></div>
         <div className="accountRoom__headerActions">
           <button className="accountRoom__ledgerTrigger" type="button" onClick={() => { setLedgerError(""); setLedgerOpen(true); }}>딱밤 장부 · {obligations.length}건</button>
           <button className="accountRoom__ghost" type="button" disabled={roomBusy} onClick={() => void supabase.auth.signOut()}>로그아웃</button>
@@ -521,6 +535,7 @@ export default function AccountRoomPanel() {
         open={authOpen}
         busy={authBusy}
         error={authError}
+        notice={authNotice}
         onClose={() => setAuthOpen(false)}
         onSubmit={handleAuth}
       />

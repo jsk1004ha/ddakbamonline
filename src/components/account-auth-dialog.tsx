@@ -6,7 +6,7 @@ import AppDialog from "@/components/app-dialog";
 
 export type AuthPayload = {
   mode: "signin" | "signup";
-  email: string;
+  loginId: string;
   password: string;
   displayName: string;
 };
@@ -15,6 +15,7 @@ type AccountAuthDialogProps = {
   open: boolean;
   busy: boolean;
   error: string;
+  notice: string;
   onClose: () => void;
   onSubmit: (payload: AuthPayload) => Promise<void>;
 };
@@ -23,11 +24,12 @@ export default function AccountAuthDialog({
   open,
   busy,
   error,
+  notice,
   onClose,
   onSubmit,
 }: AccountAuthDialogProps) {
   const [mode, setMode] = useState<"signin" | "signup">("signin");
-  const [email, setEmail] = useState("");
+  const [loginId, setLoginId] = useState("");
   const [password, setPassword] = useState("");
   const [displayName, setDisplayName] = useState("");
 
@@ -78,7 +80,7 @@ export default function AccountAuthDialog({
           className="accountRoom__auth"
           onSubmit={async (event) => {
             event.preventDefault();
-            await onSubmit({ mode, email, password, displayName });
+            await onSubmit({ mode, loginId, password, displayName });
             setPassword("");
           }}
         >
@@ -96,13 +98,18 @@ export default function AccountAuthDialog({
             </label>
           )}
           <label>
-            이메일
+            아이디
             <input
-              type="email"
-              value={email}
-              onChange={(event) => setEmail(event.target.value)}
+              type="text"
+              value={loginId}
+              onChange={(event) => setLoginId(event.target.value)}
+              minLength={4}
+              maxLength={20}
+              pattern="[A-Za-z0-9_]{4,20}"
               required
-              autoComplete="email"
+              autoCapitalize="none"
+              spellCheck={false}
+              autoComplete="username"
             />
           </label>
           <label>
@@ -111,7 +118,7 @@ export default function AccountAuthDialog({
               type="password"
               value={password}
               onChange={(event) => setPassword(event.target.value)}
-              minLength={6}
+              minLength={8}
               required
               autoComplete={mode === "signup" ? "new-password" : "current-password"}
             />
@@ -127,6 +134,11 @@ export default function AccountAuthDialog({
         {error && (
           <p className="accountRoom__notice" role="alert">
             {error}
+          </p>
+        )}
+        {notice && !error && (
+          <p className="accountRoom__notice" role="status">
+            {notice}
           </p>
         )}
       </div>
