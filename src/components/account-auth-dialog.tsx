@@ -86,7 +86,7 @@ export default function AccountAuthDialog({
         >
           {mode === "signup" && (
             <label>
-              닉네임
+              이름
               <input
                 value={displayName}
                 onChange={(event) => setDisplayName(event.target.value)}

@@ -10,6 +10,7 @@ import HitLedgerDialog from "@/components/hit-ledger-dialog";
 import OnlineRoomGame from "@/components/online-room-game";
 
 import { accountIdEmail } from "@/lib/auth/account-id";
+import { normalizeDisplayName } from "@/lib/ledger/offline-entry.mjs";
 import {
   canStartRoom,
   findFirstFreeSeat,
@@ -53,7 +54,7 @@ function authErrorMessage(error: unknown): string {
   if (/password.*(?:at least|characters)|weak password/i.test(error.message)) {
     return "비밀번호는 8자 이상으로 입력해 주세요.";
   }
-  if (/^(?:아이디|닉네임)/.test(error.message)) return error.message;
+  if (/^(?:아이디|이름)/.test(error.message)) return error.message;
   return "계정 요청을 처리하지 못했어요. 잠시 후 다시 시도해 주세요.";
 }
 
@@ -245,10 +246,7 @@ export default function AccountRoomPanel() {
     try {
       const email = accountIdEmail(payload.loginId);
       if (payload.mode === "signup") {
-        const cleanName = payload.displayName.trim();
-        if (cleanName.length < 2 || cleanName.length > 24) {
-          throw new Error("닉네임은 2~24자로 입력해 주세요.");
-        }
+        const cleanName = normalizeDisplayName(payload.displayName);
         const { data, error } = await supabase.auth.signUp({
           email,
           password: payload.password,
