@@ -1,5 +1,8 @@
 export function normalizeDisplayName(value) {
-  const normalized = String(value).trim();
+  if (typeof value !== "string") {
+    throw new Error("이름은 2~24자로 입력해 주세요.");
+  }
+  const normalized = value.trim();
   if (normalized.length < 2 || normalized.length > 24) {
     throw new Error("이름은 2~24자로 입력해 주세요.");
   }
@@ -7,11 +10,10 @@ export function normalizeDisplayName(value) {
 }
 
 export function normalizeOfflineHits(value) {
-  const normalized = String(value);
-  if (!/^[1-9]\d*$/.test(normalized)) {
+  if (typeof value !== "string" || !/^[1-9]\d*$/.test(value)) {
     throw new Error("딱밤 횟수는 1 이상의 정수로 입력해 주세요.");
   }
-  return normalized;
+  return value;
 }
 
 export function mapOfflineParties(userId, counterpartyId, direction) {

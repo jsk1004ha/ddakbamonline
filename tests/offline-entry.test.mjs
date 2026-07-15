@@ -25,6 +25,20 @@ test("normalizeDisplayName rejects names longer than twenty-four characters", ()
   );
 });
 
+for (const [label, invalidName] of [
+  ["null", null],
+  ["undefined", undefined],
+  ["an array", ["선우"]],
+  ["an object", {}],
+]) {
+  test(`normalizeDisplayName rejects ${label} before coercion`, () => {
+    assert.throws(
+      () => normalizeDisplayName(invalidName),
+      new Error("이름은 2~24자로 입력해 주세요."),
+    );
+  });
+}
+
 test("normalizeOfflineHits preserves an arbitrarily large positive integer", () => {
   const hugeHits = "1234567890123456789012345678901234567890";
 
@@ -33,6 +47,21 @@ test("normalizeOfflineHits preserves an arbitrarily large positive integer", () 
 
 for (const invalidHits of ["", 0, "01", -1, 1.5, " 2 "]) {
   test(`normalizeOfflineHits rejects ${JSON.stringify(invalidHits)}`, () => {
+    assert.throws(
+      () => normalizeOfflineHits(invalidHits),
+      new Error("딱밤 횟수는 1 이상의 정수로 입력해 주세요."),
+    );
+  });
+}
+
+for (const [label, invalidHits] of [
+  ["a number", 1],
+  ["an unsafe number", Number.MAX_SAFE_INTEGER + 1],
+  ["a bigint", 2n],
+  ["an array", ["2"]],
+  ["an object", { toString: () => "2" }],
+]) {
+  test(`normalizeOfflineHits rejects ${label} before coercion`, () => {
     assert.throws(
       () => normalizeOfflineHits(invalidHits),
       new Error("딱밤 횟수는 1 이상의 정수로 입력해 주세요."),

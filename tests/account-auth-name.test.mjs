@@ -14,6 +14,17 @@ const roomPanelSource = await readFile(
 const signupBlockStart = authDialogSource.indexOf('{mode === "signup" && (');
 const signupBlockEnd = authDialogSource.indexOf("\n          )}", signupBlockStart);
 const signupBlock = authDialogSource.slice(signupBlockStart, signupBlockEnd);
+const signupBranchStart = roomPanelSource.indexOf(
+  'if (payload.mode === "signup") {',
+);
+const signupBranchEnd = roomPanelSource.indexOf(
+  "      } else {",
+  signupBranchStart,
+);
+const signupBranch = roomPanelSource.slice(
+  signupBranchStart,
+  signupBranchEnd,
+);
 
 test("signup asks for a required 이름 with the existing input constraints", () => {
   assert.notEqual(signupBlockStart, -1, "signup block should exist");
@@ -26,10 +37,21 @@ test("signup asks for a required 이름 with the existing input constraints", ()
   assert.doesNotMatch(signupBlock, /닉네임/);
 });
 
-test("account signup uses the shared display-name normalizer", () => {
+test("account signup validates and stores the normalized display name", () => {
+  assert.notEqual(signupBranchStart, -1, "signup branch should exist");
+  assert.notEqual(signupBranchEnd, -1, "signup branch should be complete");
   assert.match(
-    roomPanelSource,
+    signupBranch,
     /const cleanName = normalizeDisplayName\(payload\.displayName\);/,
+  );
+  assert.match(
+    signupBranch,
+    /data:\s*\{\s*display_name:\s*cleanName\s*\}/,
+  );
+  assert.ok(
+    signupBranch.indexOf("normalizeDisplayName(payload.displayName)") <
+      signupBranch.indexOf("supabase.auth.signUp"),
+    "display name should be validated before signup",
   );
 });
 
