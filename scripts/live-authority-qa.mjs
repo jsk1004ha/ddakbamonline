@@ -18,19 +18,33 @@ const key = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const qaPassword = process.env.QA_PASSWORD;
 const internalDomain = "accounts.ddakbamonline.com";
+let offlineRpcResponseBody = null;
 
-function client() {
-  return createClient(url, key, {
+function client({ captureOfflineRpc = false } = {}) {
+  const options = {
     auth: { autoRefreshToken: false, persistSession: false },
-  });
+  };
+  if (captureOfflineRpc) {
+    options.global = {
+      fetch: async (input, init) => {
+        const response = await fetch(input, init);
+        if (String(input).includes("/rpc/add_offline_hit_obligation")) {
+          offlineRpcResponseBody = await response.clone().text();
+        }
+        return response;
+      },
+    };
+  }
+  return createClient(url, key, options);
 }
 
-const host = client();
+const host = client({ captureOfflineRpc: true });
 const guest = client();
 const admin = createClient(url, serviceRoleKey, {
   auth: { autoRefreshToken: false, persistSession: false },
 });
 const createdUserIds = [];
+const offlineObligationIds = [];
 let qaRoomId = null;
 
 async function provisionQaUser(accountId) {
@@ -47,6 +61,17 @@ async function provisionQaUser(accountId) {
 }
 
 async function cleanupQaData() {
+  if (offlineObligationIds.length > 0) {
+    assert.ifError(
+      (
+        await admin
+          .from("hit_obligations")
+          .delete()
+          .in("id", offlineObligationIds)
+      ).error,
+    );
+  }
+
   if (createdUserIds.length > 0) {
     const { data: results, error: resultsError } = await admin
       .from("game_results")
@@ -80,6 +105,23 @@ function expectError(result, label) {
   assert.ok(result.error, `${label} should be rejected`);
 }
 
+function expectRejectedOfflineRpc(result, label) {
+  const rows = Array.isArray(result.data) ? result.data : [result.data];
+  for (const row of rows) {
+    if (row?.id) offlineObligationIds.push(row.id);
+  }
+  expectError(result, label);
+}
+
+function assertExactNumericField(json, field, expected) {
+  assert.ok(json, "expected the raw offline RPC response body");
+  assert.match(
+    json,
+    new RegExp(`"${field}"\\s*:\\s*${expected}(?=\\s*[,}])`),
+    `${field} lost integer precision in the RPC response`,
+  );
+}
+
 function assertPublicState(state) {
   assert.equal(Number(state.schema), 2);
   const serialized = JSON.stringify(state);
@@ -109,6 +151,26 @@ async function readRoom(roomId) {
     .from("game_rooms")
     .select("*")
     .eq("id", roomId)
+    .single();
+  assert.ifError(error);
+  return data;
+}
+
+async function readProfileCounters(supabase, userId) {
+  const { data, error } = await supabase
+    .from("profiles")
+    .select("games_played, games_won, hits_delivered, hits_received")
+    .eq("id", userId)
+    .single();
+  assert.ifError(error);
+  return data;
+}
+
+async function readObligation(supabase, obligationId) {
+  const { data, error } = await supabase
+    .from("hit_obligations")
+    .select("*")
+    .eq("id", obligationId)
     .single();
   assert.ifError(error);
   return data;
@@ -150,6 +212,134 @@ const guestId = await signIn(guest, guestAccountId);
 assert.equal(hostId, provisionedHostId);
 assert.equal(guestId, provisionedGuestId);
 assert.notEqual(hostId, guestId);
+
+const largeOfflineHits = "900719925474099312345678901234567890";
+const offlineRemainingHits = (BigInt(largeOfflineHits) - 1n).toString();
+const profilesBeforeOffline = await Promise.all([
+  readProfileCounters(host, hostId),
+  readProfileCounters(guest, guestId),
+]);
+const { data: offlineRpcData, error: offlineRpcError } = await host.rpc(
+  "add_offline_hit_obligation",
+  {
+    counterparty_id: guestId,
+    direction: "i_hit",
+    hits: largeOfflineHits,
+  },
+);
+assert.ifError(offlineRpcError);
+const offlineObligation = Array.isArray(offlineRpcData)
+  ? offlineRpcData[0]
+  : offlineRpcData;
+assert.ok(offlineObligation?.id);
+offlineObligationIds.push(offlineObligation.id);
+assert.equal(offlineObligation.source, "offline");
+assert.equal(offlineObligation.game_result_id, null);
+assert.equal(offlineObligation.room_id, null);
+assert.equal(offlineObligation.created_by, hostId);
+assert.equal(offlineObligation.creditor_id, hostId);
+assert.equal(offlineObligation.debtor_id, guestId);
+assertExactNumericField(
+  offlineRpcResponseBody,
+  "initial_hits",
+  largeOfflineHits,
+);
+assertExactNumericField(
+  offlineRpcResponseBody,
+  "remaining_hits",
+  largeOfflineHits,
+);
+
+const hostOfflineRead = await readObligation(host, offlineObligation.id);
+const guestOfflineRead = await readObligation(guest, offlineObligation.id);
+assert.equal(hostOfflineRead.id, offlineObligation.id);
+assert.equal(guestOfflineRead.id, offlineObligation.id);
+
+const exactOfflineRead = await host
+  .from("hit_obligations")
+  .select("id")
+  .eq("id", offlineObligation.id)
+  .eq("initial_hits", largeOfflineHits)
+  .eq("remaining_hits", largeOfflineHits)
+  .eq("delivered_hits", 0);
+assert.ifError(exactOfflineRead.error);
+assert.deepEqual(exactOfflineRead.data, [{ id: offlineObligation.id }]);
+
+const profilesAfterOffline = await Promise.all([
+  readProfileCounters(host, hostId),
+  readProfileCounters(guest, guestId),
+]);
+assert.deepEqual(profilesAfterOffline, profilesBeforeOffline);
+
+expectRejectedOfflineRpc(
+  await host.rpc("add_offline_hit_obligation", {
+    counterparty_id: hostId,
+    direction: "i_hit",
+    hits: "1",
+  }),
+  "self offline obligation",
+);
+expectRejectedOfflineRpc(
+  await host.rpc("add_offline_hit_obligation", {
+    counterparty_id: guestId,
+    direction: "i_hit",
+    hits: "01",
+  }),
+  "noncanonical offline hit count",
+);
+expectRejectedOfflineRpc(
+  await host.rpc("add_offline_hit_obligation", {
+    counterparty_id: guestId,
+    direction: "invalid",
+    hits: "1",
+  }),
+  "invalid offline direction",
+);
+
+const directOfflineInsert = {
+  id: crypto.randomUUID(),
+  game_result_id: null,
+  room_id: null,
+  debtor_id: guestId,
+  creditor_id: hostId,
+  initial_hits: "2",
+  remaining_hits: "2",
+  source: "offline",
+  created_by: hostId,
+};
+offlineObligationIds.push(directOfflineInsert.id);
+expectError(
+  await host.from("hit_obligations").insert(directOfflineInsert),
+  "direct offline ledger insertion",
+);
+const directOfflineUpsert = {
+  ...directOfflineInsert,
+  id: crypto.randomUUID(),
+};
+offlineObligationIds.push(directOfflineUpsert.id);
+expectError(
+  await host.from("hit_obligations").upsert(directOfflineUpsert),
+  "direct offline ledger upsert",
+);
+
+const { data: offlineHitResult, error: offlineHitError } = await host.rpc(
+  "record_physical_hit",
+  {
+    obligation_id: offlineObligation.id,
+    expected_remaining: largeOfflineHits,
+  },
+);
+assert.ifError(offlineHitError);
+assert.equal(offlineHitResult.remainingHits, offlineRemainingHits);
+assert.equal(offlineHitResult.deliveredHits, 1);
+const exactOfflineHitRead = await host
+  .from("hit_obligations")
+  .select("id")
+  .eq("id", offlineObligation.id)
+  .eq("remaining_hits", offlineRemainingHits)
+  .eq("delivered_hits", 1);
+assert.ifError(exactOfflineHitRead.error);
+assert.deepEqual(exactOfflineHitRead.data, [{ id: offlineObligation.id }]);
 
 const roomCode = `Q${Math.random().toString(36).slice(2, 7)}`
   .toUpperCase()
@@ -252,18 +442,6 @@ expectError(
   }),
   "direct result insertion",
 );
-expectError(
-  await host.from("hit_obligations").insert({
-    game_result_id: crypto.randomUUID(),
-    room_id: roomId,
-    debtor_id: guestId,
-    creditor_id: hostId,
-    initial_hits: 999999,
-    remaining_hits: 999999,
-  }),
-  "direct ledger insertion",
-);
-
 const initialVersion = room.version;
 const initialStake = room.state.betting.currentStake;
 const turnId = room.state.betting.turnPlayerId;
@@ -410,10 +588,16 @@ console.log(
   JSON.stringify({
     opponentHandHiddenBeforeShowdown: true,
     publicStateHasNoCards: true,
-    directAuthorityWritesRejected: 4,
+    directAuthorityWritesRejected: 5,
     invalidActionsRejected: 3,
     duplicateSettlementCount: resultRows.length,
     hitReplayRejected: true,
+    offlineObligationCreated: true,
+    offlineVisibleToBothParties: true,
+    offlineProfileCountersUnchanged: true,
+    offlineInvalidInputsRejected: 3,
+    offlineDirectWritesRejected: 2,
+    offlinePhysicalHitRecorded: true,
   }),
 );
 } finally {
