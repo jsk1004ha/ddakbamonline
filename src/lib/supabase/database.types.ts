@@ -12,6 +12,7 @@ export type Database = {
       profiles: {
         Row: {
           id: string;
+          account_id: string;
           display_name: string;
           games_played: number;
           games_won: number;
@@ -22,6 +23,7 @@ export type Database = {
         };
         Insert: {
           id: string;
+          account_id: string;
           display_name: string;
           games_played?: number;
           games_won?: number;
@@ -32,6 +34,7 @@ export type Database = {
         };
         Update: {
           id?: string;
+          account_id?: string;
           display_name?: string;
           games_played?: number;
           games_won?: number;
@@ -41,6 +44,54 @@ export type Database = {
           updated_at?: string;
         };
         Relationships: [];
+      };
+      game_actions: {
+        Row: {
+          id: number;
+          room_id: string;
+          round_token: string;
+          player_id: string;
+          room_version: number;
+          action_name: string;
+          raise_to: string | number | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: never;
+          room_id: string;
+          round_token: string;
+          player_id: string;
+          room_version: number;
+          action_name: string;
+          raise_to?: string | number | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: never;
+          room_id?: string;
+          round_token?: string;
+          player_id?: string;
+          room_version?: number;
+          action_name?: string;
+          raise_to?: string | number | null;
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "game_actions_player_id_fkey";
+            columns: ["player_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "game_actions_room_id_fkey";
+            columns: ["room_id"];
+            isOneToOne: false;
+            referencedRelation: "game_rooms";
+            referencedColumns: ["id"];
+          },
+        ];
       };
       game_rooms: {
         Row: {
@@ -121,6 +172,45 @@ export type Database = {
             columns: ["user_id"];
             isOneToOne: false;
             referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      game_round_hands: {
+        Row: {
+          room_id: string;
+          round_token: string;
+          player_id: string;
+          card_ids: number[];
+          created_at: string;
+        };
+        Insert: {
+          room_id: string;
+          round_token: string;
+          player_id: string;
+          card_ids: number[];
+          created_at?: string;
+        };
+        Update: {
+          room_id?: string;
+          round_token?: string;
+          player_id?: string;
+          card_ids?: number[];
+          created_at?: string;
+        };
+        Relationships: [
+          {
+            foreignKeyName: "game_round_hands_player_id_fkey";
+            columns: ["player_id"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "game_round_hands_room_id_fkey";
+            columns: ["room_id"];
+            isOneToOne: false;
+            referencedRelation: "game_rooms";
             referencedColumns: ["id"];
           },
         ];
@@ -240,7 +330,28 @@ export type Database = {
       };
     };
     Views: Record<never, never>;
-    Functions: Record<never, never>;
+    Functions: {
+      play_game_action: {
+        Args: {
+          action_name: string;
+          expected_version: number;
+          raise_to: string | null;
+          target_room: string;
+        };
+        Returns: Json;
+      };
+      record_physical_hit: {
+        Args: {
+          expected_remaining: string | number;
+          obligation_id: string;
+        };
+        Returns: Json;
+      };
+      start_game_round: {
+        Args: { expected_version: number; target_room: string };
+        Returns: Json;
+      };
+    };
     Enums: Record<never, never>;
     CompositeTypes: Record<never, never>;
   };

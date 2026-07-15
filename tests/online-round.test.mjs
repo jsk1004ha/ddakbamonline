@@ -1,7 +1,17 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { readPublicOnlineRound } from "../src/lib/game/online-round.mjs";
+
+const onlineGameSource = await readFile(
+  new URL("../src/components/online-room-game.tsx", import.meta.url),
+  "utf8",
+);
+const accountRoomSource = await readFile(
+  new URL("../src/components/account-room-panel.tsx", import.meta.url),
+  "utf8",
+);
 
 const safeRound = {
   schema: 2,
@@ -127,4 +137,45 @@ test("rejects unexpected public keys that could smuggle hidden card data", () =>
     }),
     null,
   );
+});
+
+test("keeps hidden hands and game settlement outside the React client", () => {
+  for (const forbiddenAuthority of [
+    "dealRound",
+    "applyAction",
+    "compareHands",
+    'from("game_results")',
+    'from("hit_obligations").upsert',
+  ]) {
+    assert.equal(onlineGameSource.includes(forbiddenAuthority), false);
+  }
+  assert.doesNotMatch(
+    onlineGameSource,
+    /\.from\("game_rooms"\)[\s\S]{0,160}\.update\(/,
+  );
+});
+
+test("uses only authenticated game RPCs and RLS-visible hand reads", () => {
+  assert.match(onlineGameSource, /\.rpc\("play_game_action"/);
+  assert.match(onlineGameSource, /\.from\("game_round_hands"\)/);
+  assert.match(accountRoomSource, /\.rpc\("start_game_round"/);
+  assert.match(accountRoomSource, /\.rpc\("record_physical_hit"/);
+  assert.doesNotMatch(
+    accountRoomSource,
+    /\.from\("hit_obligations"\)[\s\S]{0,160}\.update\(/,
+  );
+  assert.doesNotMatch(
+    accountRoomSource,
+    /\.from\("game_rooms"\)[\s\S]{0,160}\.update\(/,
+  );
+});
+
+test("keeps diagnostics nonidentifying and renders two backs for a hidden hand", () => {
+  const diagnosticsSource = onlineGameSource.match(
+    /gameWindow\.render_game_to_text[\s\S]*?gameWindow\.advanceTime/,
+  )?.[0];
+  assert.ok(diagnosticsSource);
+  assert.doesNotMatch(diagnosticsSource, /\b(?:userId|playerIds|turnPlayerId)\s*:/);
+  assert.match(diagnosticsSource, /playerCount:/);
+  assert.match(onlineGameSource, /visibleCards \?\? \[null, null\]/);
 });

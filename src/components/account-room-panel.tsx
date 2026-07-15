@@ -7,7 +7,7 @@ import AccountAuthDialog, {
   type AuthPayload,
 } from "@/components/account-auth-dialog";
 import HitLedgerDialog from "@/components/hit-ledger-dialog";
-import OnlineRoomGame, { createOnlineRound } from "@/components/online-room-game";
+import OnlineRoomGame from "@/components/online-room-game";
 
 import { accountIdEmail } from "@/lib/auth/account-id";
 import {
@@ -20,7 +20,7 @@ import {
   getSupabaseBrowserClient,
   isSupabaseConfigured,
 } from "@/lib/supabase/client";
-import type { Json, Tables } from "@/lib/supabase/database.types";
+import type { Tables } from "@/lib/supabase/database.types";
 
 type Profile = Tables<"profiles">;
 type Room = Tables<"game_rooms">;
@@ -28,10 +28,22 @@ type Member = Tables<"room_members">;
 type Obligation = Tables<"hit_obligations">;
 
 function errorMessage(error: unknown): string {
-  if (!(error instanceof Error)) return "요청을 처리하지 못했어요. 잠시 후 다시 시도해 주세요.";
-  if (/room is full|duplicate key/i.test(error.message)) return "방이 가득 찼거나 자리가 방금 선택됐어요.";
-  if (/room is not available/i.test(error.message)) return "입장할 수 없는 방이에요.";
-  return error.message;
+  const message =
+    error instanceof Error
+      ? error.message
+      : error &&
+          typeof error === "object" &&
+          "message" in error &&
+          typeof error.message === "string"
+        ? error.message
+        : "";
+  if (!message) return "요청을 처리하지 못했어요. 잠시 후 다시 시도해 주세요.";
+  if (/stale (?:room version|remaining hit count)/i.test(message)) {
+    return "다른 기기에서 먼저 반영했어요. 최신 상태로 다시 맞췄습니다.";
+  }
+  if (/room is full|duplicate key/i.test(message)) return "방이 가득 찼거나 자리가 방금 선택됐어요.";
+  if (/room is not available/i.test(message)) return "입장할 수 없는 방이에요.";
+  return message;
 }
 
 function authErrorMessage(error: unknown): string {
@@ -374,28 +386,14 @@ export default function AccountRoomPanel() {
       return;
     }
     setRoomBusy(true);
-    const onlineRound = createOnlineRound(
-      [...members]
-        .sort((left, right) => left.seat - right.seat)
-        .map((member) => member.user_id),
-    );
-    const { data, error } = await supabase
-      .from("game_rooms")
-      .update({
-        status: "playing",
-        state: onlineRound as unknown as Json,
-        version: room.version + 1,
-      })
-      .eq("id", room.id)
-      .eq("version", room.version)
-      .select("id")
-      .maybeSingle();
-    if (error) setRoomNotice(errorMessage(error));
-    else if (!data) {
-      setRoomNotice("참가자 상태가 바뀌었어요. 최신 방 상태에서 다시 시작해 주세요.");
+    const { error } = await supabase.rpc("start_game_round", {
+      target_room: room.id,
+      expected_version: room.version,
+    });
+    if (error) {
+      setRoomNotice(errorMessage(error));
       await refreshRoom(room.id);
-    }
-    else {
+    } else {
       await refreshRoom(room.id);
       setRoomNotice("온라인 계정 대전을 시작했어요.");
     }
@@ -411,19 +409,12 @@ export default function AccountRoomPanel() {
     setLedgerBusy(true);
     setLedgerError("");
     try {
-      const { data, error } = await supabase
-        .from("hit_obligations")
-        .update({
-          remaining_hits: (remaining - BigInt(1)).toString(),
-          delivered_hits: obligation.delivered_hits + 1,
-        })
-        .eq("id", obligation.id)
-        .eq("remaining_hits", obligation.remaining_hits)
-        .select("id")
-        .maybeSingle();
-      if (error) setLedgerError(errorMessage(error));
-      else if (!data) {
-        setLedgerError("다른 기기에서 먼저 기록했어요. 최신 값으로 새로고침했어요.");
+      const { error } = await supabase.rpc("record_physical_hit", {
+        obligation_id: obligation.id,
+        expected_remaining: normalized,
+      });
+      if (error) {
+        setLedgerError(errorMessage(error));
       } else {
         setLedgerError("");
       }
@@ -521,7 +512,6 @@ export default function AccountRoomPanel() {
           names={names}
           userId={user.id}
           onRefreshRoom={refreshRoom}
-          onRefreshLedger={refreshLedger}
           onNotice={setRoomNotice}
         />
       )}

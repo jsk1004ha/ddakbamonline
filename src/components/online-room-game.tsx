@@ -1,72 +1,35 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import {
-  applyAction,
-  compareHands,
-  createBettingState,
-  dealRound,
+  createDeck,
   evaluateHand,
-  type BettingState,
   type Card,
-  type EvaluatedHand,
-  type ExactInteger,
 } from "@/lib/game/engine.mjs";
 import {
   COMPACT_HAND_RANKING,
   handRankingGroup,
 } from "@/lib/game/hand-ranking.mjs";
+import { readPublicOnlineRound } from "@/lib/game/online-round.mjs";
 import { getSupabaseBrowserClient } from "@/lib/supabase/client";
-import type { Json, Tables } from "@/lib/supabase/database.types";
+import type { Tables } from "@/lib/supabase/database.types";
 
 type Room = Tables<"game_rooms">;
 
-export type OnlineRoundState = {
-  schema: 1;
-  roundToken: string;
-  roundNumber: number;
-  playerIds: string[];
+type HandsSnapshot = {
+  roundToken: string | null;
   hands: Record<string, Card[]>;
-  betting: BettingState;
-  phase: "betting" | "showdown";
-  evaluations: Record<string, EvaluatedHand>;
-  winnerIds: string[];
-  resultRecorded: boolean;
 };
 
-export function createOnlineRound(
-  playerIds: string[],
-  roundNumber = 1,
-): OnlineRoundState {
-  return {
-    schema: 1,
-    roundToken: crypto.randomUUID(),
-    roundNumber,
-    playerIds,
-    hands: dealRound(playerIds),
-    betting: createBettingState(playerIds, "1"),
-    phase: "betting",
-    evaluations: {},
-    winnerIds: [],
-    resultRecorded: false,
-  };
-}
+const CARD_BY_IMAGE_ID = new Map(
+  createDeck().map((card) => [card.imageId, card]),
+);
 
-function readOnlineRound(value: Json): OnlineRoundState | null {
-  if (!value || Array.isArray(value) || typeof value !== "object") return null;
-  const candidate = value as Record<string, unknown>;
-  if (
-    candidate.schema !== 1 ||
-    typeof candidate.roundToken !== "string" ||
-    !Array.isArray(candidate.playerIds) ||
-    !candidate.hands ||
-    !candidate.betting ||
-    (candidate.phase !== "betting" && candidate.phase !== "showdown")
-  ) {
-    return null;
-  }
-  return value as unknown as OnlineRoundState;
+function cardsFromIds(cardIds: number[]): Card[] | null {
+  if (cardIds.length !== 2 || cardIds[0] === cardIds[1]) return null;
+  const cards = cardIds.map((cardId) => CARD_BY_IMAGE_ID.get(cardId));
+  return cards.every((card): card is Card => Boolean(card)) ? cards : null;
 }
 
 function exact(value: number | string | bigint): bigint {
@@ -77,27 +40,14 @@ function formatted(value: number | string | bigint): string {
   return exact(value).toLocaleString("ko-KR");
 }
 
-function resolveShowdown(
-  round: OnlineRoundState,
-  betting: BettingState,
-): OnlineRoundState {
-  const evaluations = Object.fromEntries(
-    round.playerIds.map((playerId) => [playerId, evaluateHand(round.hands[playerId])]),
+function isStaleRequest(error: unknown): boolean {
+  return Boolean(
+    error &&
+      typeof error === "object" &&
+      "message" in error &&
+      typeof error.message === "string" &&
+      /stale room version/i.test(error.message),
   );
-  const bestId = round.playerIds.reduce((best, playerId) =>
-    compareHands(evaluations[playerId], evaluations[best]) > 0 ? playerId : best,
-  );
-  const winnerIds = round.playerIds.filter(
-    (playerId) => compareHands(evaluations[playerId], evaluations[bestId]) === 0,
-  );
-  return {
-    ...round,
-    betting,
-    phase: "showdown",
-    evaluations,
-    winnerIds,
-    resultRecorded: false,
-  };
 }
 
 type Props = {
@@ -105,7 +55,6 @@ type Props = {
   names: Record<string, string>;
   userId: string;
   onRefreshRoom: (roomId: string) => Promise<void>;
-  onRefreshLedger: (accountId: string) => Promise<void>;
   onNotice: (message: string) => void;
 };
 
@@ -114,133 +63,60 @@ export default function OnlineRoomGame({
   names,
   userId,
   onRefreshRoom,
-  onRefreshLedger,
   onNotice,
 }: Props) {
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
   const [raiseAmount, setRaiseAmount] = useState("");
   const [busy, setBusy] = useState(false);
-  const recording = useRef(new Set<string>());
-  const round = readOnlineRound(room.state);
-  const myHand = round?.hands[userId];
+  const [handsSnapshot, setHandsSnapshot] = useState<HandsSnapshot>({
+    roundToken: null,
+    hands: {},
+  });
+  const round = readPublicOnlineRound(room.state);
+  const roundToken = round?.roundToken ?? null;
+  const roundPhase = round?.phase ?? null;
+  const hands =
+    round && handsSnapshot.roundToken === round.roundToken
+      ? handsSnapshot.hands
+      : {};
+  const myHand = hands[userId];
   const myEvaluation = myHand ? evaluateHand(myHand) : null;
   const currentRankingGroup = myEvaluation
     ? handRankingGroup(myEvaluation.name)
     : null;
-
-  const commitRound = useCallback(
-    async (nextRound: OnlineRoundState) => {
-      if (!supabase) return false;
-      setBusy(true);
-      const { data, error } = await supabase
-        .from("game_rooms")
-        .update({
-          state: nextRound as unknown as Json,
-          version: room.version + 1,
-        })
-        .eq("id", room.id)
-        .eq("version", room.version)
-        .select("version")
-        .maybeSingle();
-      setBusy(false);
-      if (error) {
-        onNotice(error.message);
-        return false;
-      }
-      if (!data) {
-        onNotice("다른 계정의 행동이 먼저 반영됐어요. 최신 판으로 다시 맞췄습니다.");
-        await onRefreshRoom(room.id);
-        return false;
-      }
-      await onRefreshRoom(room.id);
-      return true;
-    },
-    [onNotice, onRefreshRoom, room.id, room.version, supabase],
-  );
-
-  const persistResult = useCallback(
-    async (finished: OnlineRoundState) => {
-      if (!supabase) return;
-      const soleWinner = finished.winnerIds.length === 1 ? finished.winnerIds[0] : null;
-      const recorderId = soleWinner ?? room.host_id;
-      if (recorderId !== userId || finished.resultRecorded) return;
-
-      const existing = await supabase
-        .from("game_results")
-        .select("id")
-        .eq("round_token", finished.roundToken)
-        .maybeSingle();
-      if (existing.error) throw existing.error;
-      let resultId = existing.data?.id;
-
-      if (!resultId) {
-        const inserted = await supabase
-          .from("game_results")
-          .insert({
-            room_id: room.id,
-            round_token: finished.roundToken,
-            winner_id: soleWinner,
-            player_ids: finished.playerIds,
-            stake: String(finished.betting.currentStake),
-          })
-          .select("id")
-          .single();
-        if (inserted.error?.code === "23505") {
-          const retried = await supabase
-            .from("game_results")
-            .select("id")
-            .eq("round_token", finished.roundToken)
-            .single();
-          if (retried.error) throw retried.error;
-          resultId = retried.data.id;
-        } else if (inserted.error) {
-          throw inserted.error;
-        } else {
-          resultId = inserted.data.id;
-        }
-      }
-
-      if (soleWinner && resultId) {
-        const stake = String(finished.betting.currentStake);
-        const obligations = finished.playerIds
-          .filter((playerId) => playerId !== soleWinner)
-          .map((debtorId) => ({
-            game_result_id: resultId,
-            room_id: room.id,
-            debtor_id: debtorId,
-            creditor_id: soleWinner,
-            initial_hits: stake,
-            remaining_hits: stake,
-            delivered_hits: 0,
-          }));
-        const obligationResponse = await supabase.from("hit_obligations").upsert(
-          obligations,
-          {
-            onConflict: "game_result_id,debtor_id,creditor_id",
-            ignoreDuplicates: true,
-          },
-        );
-        if (obligationResponse.error) throw obligationResponse.error;
-      }
-
-      await onRefreshLedger(userId);
-      const marked = await commitRound({ ...finished, resultRecorded: true });
-      if (!marked) recording.current.delete(finished.roundToken);
-    },
-    [commitRound, onRefreshLedger, room.host_id, room.id, supabase, userId],
+  const isMyTurn = Boolean(
+    round?.phase === "betting" && round.betting.turnPlayerId === userId,
   );
 
   useEffect(() => {
-    if (!round || round.phase !== "showdown" || round.resultRecorded) return;
-    const recorderId = round.winnerIds.length === 1 ? round.winnerIds[0] : room.host_id;
-    if (recorderId !== userId || recording.current.has(round.roundToken)) return;
-    recording.current.add(round.roundToken);
-    void persistResult(round)
-      .catch((error: unknown) => {
-        recording.current.delete(round.roundToken);
-        onNotice(error instanceof Error ? error.message : "결과 저장에 실패했어요.");
+    if (!supabase || !roundToken) return;
+
+    let active = true;
+
+    void supabase
+      .from("game_round_hands")
+      .select("player_id, card_ids")
+      .eq("room_id", room.id)
+      .eq("round_token", roundToken)
+      .then(({ data, error }) => {
+        if (!active) return;
+        if (error) {
+          onNotice("보이는 패를 불러오지 못했어요. 판 상태를 새로고침해 주세요.");
+          return;
+        }
+
+        const nextHands: Record<string, Card[]> = {};
+        for (const row of data ?? []) {
+          const cards = cardsFromIds(row.card_ids);
+          if (cards) nextHands[row.player_id] = cards;
+        }
+        setHandsSnapshot({ roundToken, hands: nextHands });
       });
-  }, [onNotice, persistResult, room.host_id, round, userId]);
+
+    return () => {
+      active = false;
+    };
+  }, [onNotice, room.id, room.version, roundPhase, roundToken, supabase]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -248,16 +124,16 @@ export default function OnlineRoomGame({
       render_game_to_text?: () => string;
       advanceTime?: (milliseconds: number) => void;
     };
-    gameWindow.render_game_to_text = () => JSON.stringify({
-      mode: "online",
-      roundNumber: round?.roundNumber ?? null,
-      phase: round?.phase ?? "waiting",
-      userId,
-      myHandName: myEvaluation?.name ?? null,
-      turnPlayerId: round?.betting.turnPlayerId ?? null,
-      currentStake: round ? String(round.betting.currentStake) : null,
-      playerIds: round?.playerIds ?? [],
-    });
+    gameWindow.render_game_to_text = () =>
+      JSON.stringify({
+        mode: "online",
+        roundNumber: round?.roundNumber ?? null,
+        phase: round?.phase ?? "waiting",
+        myHandName: myEvaluation?.name ?? null,
+        isMyTurn,
+        currentStake: round ? String(round.betting.currentStake) : null,
+        playerCount: round?.playerIds.length ?? 0,
+      });
     gameWindow.advanceTime = (milliseconds: number) => {
       void milliseconds;
       return undefined;
@@ -266,20 +142,43 @@ export default function OnlineRoomGame({
       delete gameWindow.render_game_to_text;
       delete gameWindow.advanceTime;
     };
-  }, [myEvaluation?.name, round, userId]);
+  }, [isMyTurn, myEvaluation?.name, round]);
 
-  async function act(action: { type: "call" } | { type: "raise"; amount: ExactInteger }) {
-    if (!round || round.phase !== "betting" || round.betting.turnPlayerId !== userId) return;
+  async function submitAction(
+    action: { type: "call" } | { type: "raise"; amount: string },
+  ) {
+    if (
+      !supabase ||
+      !round ||
+      round.phase !== "betting" ||
+      round.betting.turnPlayerId !== userId ||
+      busy
+    ) {
+      return;
+    }
+
+    setBusy(true);
     try {
-      const betting = applyAction(round.betting, userId, action);
-      setRaiseAmount("");
-      await commitRound(
-        betting.status === "complete"
-          ? resolveShowdown(round, betting)
-          : { ...round, betting },
-      );
-    } catch (error) {
-      onNotice(error instanceof Error ? error.message : "행동을 처리하지 못했어요.");
+      const { error } = await supabase.rpc("play_game_action", {
+        target_room: room.id,
+        expected_version: room.version,
+        action_name: action.type,
+        raise_to: action.type === "raise" ? String(action.amount) : null,
+      });
+      if (error) {
+        onNotice(
+          isStaleRequest(error)
+            ? "다른 계정의 행동이 먼저 반영됐어요. 최신 판으로 다시 맞췄습니다."
+            : "행동이 서버에서 거절됐어요. 최신 판을 불러왔습니다.",
+        );
+      } else {
+        setRaiseAmount("");
+      }
+      await onRefreshRoom(room.id);
+    } catch {
+      onNotice("행동을 처리하지 못했어요. 최신 판을 다시 불러와 주세요.");
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -293,51 +192,110 @@ export default function OnlineRoomGame({
       onNotice(`현재 ${formatted(round.betting.currentStake)}보다 큰 정수를 입력해 주세요.`);
       return;
     }
-    void act({ type: "raise", amount: raiseAmount });
+    void submitAction({ type: "raise", amount: raiseAmount });
+  }
+
+  async function startNextRound() {
+    if (!supabase || !round || room.host_id !== userId || busy) return;
+    setBusy(true);
+    try {
+      const { error } = await supabase.rpc("start_game_round", {
+        target_room: room.id,
+        expected_version: room.version,
+      });
+      if (error) {
+        onNotice(
+          isStaleRequest(error)
+            ? "다른 기기에서 판이 먼저 바뀌었어요. 최신 상태로 다시 맞췄습니다."
+            : "다음 판을 시작하지 못했어요. 최신 상태를 확인해 주세요.",
+        );
+      }
+      await onRefreshRoom(room.id);
+    } catch {
+      onNotice("다음 판을 시작하지 못했어요. 잠시 후 다시 시도해 주세요.");
+    } finally {
+      setBusy(false);
+    }
   }
 
   if (!round) {
     return (
       <section className="onlineGame onlineGame--loading">
         <strong>온라인 패를 준비하고 있어요</strong>
-        <span>방장이 판을 시작하면 2~4개 계정에 패가 배분됩니다.</span>
+        <span>방장이 판을 시작하면 서버가 2~4개 계정에 패를 배분합니다.</span>
         <OnlineStyles />
       </section>
     );
   }
 
-  const isMyTurn = round.phase === "betting" && round.betting.turnPlayerId === userId;
-  const winnerText = round.winnerIds.length === 1
-    ? `${names[round.winnerIds[0]] ?? "플레이어"} 승리`
-    : "공동 1위 · 채무 없음";
+  const winnerText =
+    round.winnerIds.length === 1
+      ? `${names[round.winnerIds[0]] ?? "플레이어"} 승리`
+      : "공동 1위 · 채무 없음";
 
   return (
     <section className="onlineGame" aria-labelledby="online-game-heading">
       <header>
-        <div><small>REALTIME TABLE · ROUND {round.roundNumber}</small><h3 id="online-game-heading">계정 방 실전판</h3></div>
-        <span>{round.phase === "betting" ? `판 딱밤 ${formatted(round.betting.currentStake)}` : winnerText}</span>
+        <div>
+          <small>REALTIME TABLE · ROUND {round.roundNumber}</small>
+          <h3 id="online-game-heading">계정 방 실전판</h3>
+        </div>
+        <span>
+          {round.phase === "betting"
+            ? `판 딱밤 ${formatted(round.betting.currentStake)}`
+            : winnerText}
+        </span>
       </header>
 
       <div className={`onlineGame__seats onlineGame__seats--${round.playerIds.length}`}>
         {round.playerIds.map((playerId) => {
-          const reveal = round.phase === "showdown" || playerId === userId;
-          const isTurn = round.phase === "betting" && round.betting.turnPlayerId === playerId;
+          const isTurn =
+            round.phase === "betting" &&
+            round.betting.turnPlayerId === playerId;
+          const visibleCards =
+            playerId === userId || round.phase === "showdown"
+              ? hands[playerId]
+              : undefined;
+          const cardSlots: Array<Card | null> = visibleCards ?? [null, null];
+
           return (
             <article key={playerId} className={isTurn ? "is-turn" : ""}>
-              <div><strong>{names[playerId] ?? "플레이어"}{playerId === userId ? " · 나" : ""}</strong><small>{isTurn ? "현재 차례" : `받음 ${formatted(round.betting.commitments[playerId] ?? 0)}`}</small></div>
+              <div>
+                <strong>
+                  {names[playerId] ?? "플레이어"}
+                  {playerId === userId ? " · 나" : ""}
+                </strong>
+                <small>
+                  {isTurn
+                    ? "현재 차례"
+                    : `받음 ${formatted(round.betting.commitments[playerId] ?? 0)}`}
+                </small>
+              </div>
               <div className="onlineGame__cards">
-                {round.hands[playerId]?.map((card) => (
+                {cardSlots.map((card, index) => (
                   // Source artwork is served from the attributed local card set.
                   // eslint-disable-next-line @next/next/no-img-element
-                  <img key={card.id} src={reveal ? `/cards/${card.imageId}.png` : "/cards/back.png"} width="72" height="106" alt={reveal ? `${card.month}월 패` : "뒤집힌 패"} />
+                  <img
+                    key={card?.id ?? `back-${index}`}
+                    src={card ? `/cards/${card.imageId}.png` : "/cards/back.png"}
+                    width="72"
+                    height="106"
+                    alt={card ? `${card.month}월 패` : "뒤집힌 패"}
+                  />
                 ))}
               </div>
               {playerId === userId && myEvaluation && (
                 <details className="onlineGame__rankRollup">
-                  <summary><strong>내 패 · {myEvaluation.name}</strong><span>족보 보기</span></summary>
+                  <summary>
+                    <strong>내 패 · {myEvaluation.name}</strong>
+                    <span>족보 보기</span>
+                  </summary>
                   <div className="onlineGame__rankList">
                     {COMPACT_HAND_RANKING.map((group) => (
-                      <div key={group.id} className={currentRankingGroup === group.id ? "is-current" : ""}>
+                      <div
+                        key={group.id}
+                        className={currentRankingGroup === group.id ? "is-current" : ""}
+                      >
                         <b>{group.label}</b>
                         <span>{group.summary}</span>
                       </div>
@@ -345,7 +303,11 @@ export default function OnlineRoomGame({
                   </div>
                 </details>
               )}
-              {round.phase === "showdown" && <b className="onlineGame__hand">{round.evaluations[playerId]?.name}</b>}
+              {round.phase === "showdown" && (
+                <b className="onlineGame__hand">
+                  {round.evaluations[playerId]?.name}
+                </b>
+              )}
             </article>
           );
         })}
@@ -354,22 +316,48 @@ export default function OnlineRoomGame({
       <div className="onlineGame__actions" aria-live="polite">
         {round.phase === "showdown" ? (
           <>
-            <div><strong>{winnerText}</strong><span>{round.resultRecorded ? "계정 장부 저장 완료" : "계정 장부 저장 중…"}</span></div>
+            <div>
+              <strong>{winnerText}</strong>
+              <span>계정 장부 반영 완료</span>
+            </div>
             {room.host_id === userId && (
-              <button type="button" disabled={busy || !round.resultRecorded} onClick={() => void commitRound(createOnlineRound(round.playerIds, round.roundNumber + 1))}>다음 판</button>
+              <button type="button" disabled={busy} onClick={() => void startNextRound()}>
+                다음 판
+              </button>
             )}
           </>
         ) : isMyTurn ? (
           <>
-            <button type="button" disabled={busy} onClick={() => void act({ type: "call" })}>받기 <small>{formatted(round.betting.currentStake)}에 맞춤</small></button>
-            <label>올릴 총 딱밤<input value={raiseAmount} onChange={(event) => setRaiseAmount(event.target.value.trim())} inputMode="numeric" pattern="[0-9]*" placeholder={(exact(round.betting.currentStake) + BigInt(1)).toString()} /></label>
-            <button type="button" disabled={busy} onClick={raise}>올리기</button>
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void submitAction({ type: "call" })}
+            >
+              받기 <small>{formatted(round.betting.currentStake)}에 맞춤</small>
+            </button>
+            <label>
+              올릴 총 딱밤
+              <input
+                value={raiseAmount}
+                onChange={(event) => setRaiseAmount(event.target.value.trim())}
+                inputMode="numeric"
+                pattern="[0-9]*"
+                placeholder={(exact(round.betting.currentStake) + BigInt(1)).toString()}
+              />
+            </label>
+            <button type="button" disabled={busy} onClick={raise}>
+              올리기
+            </button>
           </>
         ) : (
-          <span>{names[round.betting.turnPlayerId ?? ""] ?? "다른 계정"}의 차례를 기다리는 중…</span>
+          <span>
+            {names[round.betting.turnPlayerId ?? ""] ?? "다른 계정"}의 차례를 기다리는 중…
+          </span>
         )}
       </div>
-      <p className="onlineGame__privacy">각 화면에는 자기 패만 먼저 보이며, 쇼다운 때 전부 공개됩니다.</p>
+      <p className="onlineGame__privacy">
+        각 화면에는 자기 패만 먼저 보이며, 쇼다운 때 전부 공개됩니다.
+      </p>
       <OnlineStyles />
     </section>
   );
