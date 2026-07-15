@@ -1,6 +1,10 @@
 "use client";
 
 import AppDialog from "@/components/app-dialog";
+import type {
+  AddOfflineObligationInput,
+  ProfileSearchResult,
+} from "@/lib/ledger/offline-entry.types";
 import type { Tables } from "@/lib/supabase/database.types";
 
 type Obligation = Tables<"hit_obligations">;
@@ -16,12 +20,8 @@ type HitLedgerDialogProps = {
   obligations: Obligation[];
   onClose: () => void;
   onRecordHit: (obligation: Obligation) => Promise<void>;
-  onSearchProfiles: (query: string) => Promise<Profile[]>;
-  onAddOfflineObligation: (input: {
-    counterpartyId: string;
-    direction: "i_hit" | "i_owe";
-    hits: string;
-  }) => Promise<void>;
+  onSearchProfiles: (query: string) => Promise<ProfileSearchResult[]>;
+  onAddOfflineObligation: (input: AddOfflineObligationInput) => Promise<void>;
 };
 
 function quantityToBigInt(value: string | number): bigint | null {

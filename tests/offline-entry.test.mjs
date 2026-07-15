@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import {
+import * as offlineEntry from "../src/lib/ledger/offline-entry.mjs";
+
+const {
   mapOfflineParties,
   normalizeDisplayName,
   normalizeOfflineHits,
-} from "../src/lib/ledger/offline-entry.mjs";
+} = offlineEntry;
 
 test("normalizeDisplayName trims a valid name", () => {
   assert.equal(normalizeDisplayName("  선우  "), "선우");
@@ -94,5 +96,61 @@ test("mapOfflineParties rejects an invalid direction", () => {
   assert.throws(
     () => mapOfflineParties("me", "them", "sideways"),
     new Error("딱밤 방향을 다시 선택해 주세요."),
+  );
+});
+
+test("profile search requires a trimmed name between two and twenty-four characters", () => {
+  assert.equal(typeof offlineEntry.buildProfileSearchPattern, "function");
+  const { buildProfileSearchPattern } = offlineEntry;
+  for (const oneCharacterQuery of ["가", "%", "_", "\\"]) {
+    assert.equal(buildProfileSearchPattern(oneCharacterQuery), null);
+  }
+  assert.equal(buildProfileSearchPattern("가".repeat(25)), null);
+  assert.equal(buildProfileSearchPattern("  가나  "), "%가나%");
+  assert.equal(
+    buildProfileSearchPattern("가".repeat(24)),
+    `%${"가".repeat(24)}%`,
+  );
+});
+
+test("ILIKE search escapes percent, underscore, and backslash literally", () => {
+  assert.equal(typeof offlineEntry.escapeIlikePattern, "function");
+  assert.equal(typeof offlineEntry.buildProfileSearchPattern, "function");
+  const { buildProfileSearchPattern, escapeIlikePattern } = offlineEntry;
+  assert.equal(escapeIlikePattern("%"), "\\%");
+  assert.equal(escapeIlikePattern("_"), "\\_");
+  assert.equal(escapeIlikePattern("\\"), "\\\\");
+  assert.equal(
+    buildProfileSearchPattern(" 가%_\\나 "),
+    "%가\\%\\_\\\\나%",
+  );
+});
+
+test("ledger errors translate known server cases without exposing raw details", () => {
+  assert.equal(typeof offlineEntry.ledgerErrorMessage, "function");
+  const { ledgerErrorMessage } = offlineEntry;
+  assert.equal(
+    ledgerErrorMessage({ message: "Authentication required" }),
+    "로그인이 만료됐어요. 다시 로그인한 뒤 시도해 주세요.",
+  );
+  assert.equal(
+    ledgerErrorMessage({ message: "Counterparty cannot be the same account" }),
+    "본인은 선택할 수 없어요.",
+  );
+  assert.equal(
+    ledgerErrorMessage({ message: "Counterparty account not found" }),
+    "선택한 계정을 찾지 못했어요. 이름으로 다시 찾아 주세요.",
+  );
+  assert.equal(
+    ledgerErrorMessage({ message: "Hits must be a positive canonical integer" }),
+    "딱밤 횟수는 1 이상의 정수로 입력해 주세요.",
+  );
+  assert.equal(
+    ledgerErrorMessage({ message: "Invalid offline obligation direction" }),
+    "딱밤 방향을 다시 선택해 주세요.",
+  );
+  assert.equal(
+    ledgerErrorMessage({ message: "duplicate key leaked-database-detail" }),
+    "딱밤 장부 요청을 처리하지 못했어요. 잠시 후 다시 시도해 주세요.",
   );
 });

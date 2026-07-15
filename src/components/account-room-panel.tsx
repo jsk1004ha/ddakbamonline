@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { User } from "@supabase/supabase-js";
 
 import AccountAuthDialog, {
@@ -11,10 +11,15 @@ import OnlineRoomGame from "@/components/online-room-game";
 
 import { accountIdEmail } from "@/lib/auth/account-id";
 import {
+  buildProfileSearchPattern,
+  ledgerErrorMessage,
   normalizeDisplayName,
   normalizeOfflineHits,
-  type OfflineDirection,
 } from "@/lib/ledger/offline-entry.mjs";
+import type {
+  AddOfflineObligationInput,
+  ProfileSearchResult,
+} from "@/lib/ledger/offline-entry.types";
 import {
   canStartRoom,
   findFirstFreeSeat,
@@ -32,6 +37,22 @@ type Room = Tables<"game_rooms">;
 type Member = Tables<"room_members">;
 type Obligation = Tables<"hit_obligations">;
 
+type AccountScope = {
+  actorId: string;
+  generation: number;
+};
+
+type OfflineMutation = AccountScope & {
+  token: symbol;
+};
+
+const LOGIN_REQUIRED_ERROR =
+  "로그인이 만료됐어요. 다시 로그인한 뒤 시도해 주세요.";
+const LEDGER_MUTATION_BUSY_ERROR =
+  "딱밤 빚을 등록하고 있어요. 잠시만 기다려 주세요.";
+const LEDGER_REFRESH_WARNING =
+  "딱밤 빚은 등록됐지만 최신 장부를 불러오지 못했어요. 잠시 후 다시 확인해 주세요.";
+
 function errorMessage(error: unknown): string {
   const message =
     error instanceof Error
@@ -48,7 +69,8 @@ function errorMessage(error: unknown): string {
   }
   if (/room is full|duplicate key/i.test(message)) return "방이 가득 찼거나 자리가 방금 선택됐어요.";
   if (/room is not available/i.test(message)) return "입장할 수 없는 방이에요.";
-  return message;
+  if (/^(?:방 코드를|대기 중인 방을|방이 가득)/.test(message)) return message;
+  return "요청을 처리하지 못했어요. 잠시 후 다시 시도해 주세요.";
 }
 
 function authErrorMessage(error: unknown): string {
@@ -64,6 +86,11 @@ function authErrorMessage(error: unknown): string {
 
 export default function AccountRoomPanel() {
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
+  const activeAccountRef = useRef<{ userId: string | null; generation: number }>({
+    userId: null,
+    generation: 0,
+  });
+  const offlineMutationRef = useRef<OfflineMutation | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [room, setRoom] = useState<Room | null>(null);
@@ -82,41 +109,66 @@ export default function AccountRoomPanel() {
   const [roomBusy, setRoomBusy] = useState(false);
   const [roomNotice, setRoomNotice] = useState("");
 
+  const captureAccountScope = useCallback(
+    (actorId: string): AccountScope => ({
+      actorId,
+      generation: activeAccountRef.current.generation,
+    }),
+    [],
+  );
+
+  const isActiveAccount = useCallback((scope: AccountScope): boolean => {
+    const active = activeAccountRef.current;
+    return active.userId === scope.actorId && active.generation === scope.generation;
+  }, []);
+
+  const isCurrentMutation = useCallback(
+    (operation: OfflineMutation): boolean =>
+      isActiveAccount(operation) &&
+      offlineMutationRef.current?.token === operation.token,
+    [isActiveAccount],
+  );
+
   const loadProfiles = useCallback(
-    async (ids: string[]) => {
+    async (ids: string[], scope?: AccountScope) => {
       if (!supabase || ids.length === 0) return;
       const uniqueIds = [...new Set(ids)];
       const { data, error } = await supabase
         .from("profiles")
         .select("*")
         .in("id", uniqueIds);
+      if (scope && !isActiveAccount(scope)) return;
       if (error) throw error;
       const next = Object.fromEntries(
         (data ?? []).map((item) => [item.id, item.display_name]),
       );
       setNames((current) => ({ ...current, ...next }));
     },
-    [supabase],
+    [isActiveAccount, supabase],
   );
 
   const refreshLedger = useCallback(
-    async (accountId: string) => {
+    async (accountId: string, scope?: AccountScope) => {
       if (!supabase) return;
       const { data, error } = await supabase
         .from("hit_obligations")
         .select("*")
         .or(`debtor_id.eq.${accountId},creditor_id.eq.${accountId}`)
         .order("created_at", { ascending: false });
+      if (scope && !isActiveAccount(scope)) return;
       if (error) throw error;
       const rows = data ?? [];
       setObligations(rows);
-      await loadProfiles(rows.flatMap((item) => [item.debtor_id, item.creditor_id]));
+      await loadProfiles(
+        rows.flatMap((item) => [item.debtor_id, item.creditor_id]),
+        scope,
+      );
     },
-    [loadProfiles, supabase],
+    [isActiveAccount, loadProfiles, supabase],
   );
 
   const refreshRoom = useCallback(
-    async (roomId: string) => {
+    async (roomId: string, scope?: AccountScope) => {
       if (!supabase) return;
       const [roomResponse, membersResponse] = await Promise.all([
         supabase.from("game_rooms").select("*").eq("id", roomId).maybeSingle(),
@@ -126,18 +178,19 @@ export default function AccountRoomPanel() {
           .eq("room_id", roomId)
           .order("seat"),
       ]);
+      if (scope && !isActiveAccount(scope)) return;
       if (roomResponse.error) throw roomResponse.error;
       if (membersResponse.error) throw membersResponse.error;
       setRoom(roomResponse.data);
       const nextMembers = membersResponse.data ?? [];
       setMembers(nextMembers);
-      await loadProfiles(nextMembers.map((member) => member.user_id));
+      await loadProfiles(nextMembers.map((member) => member.user_id), scope);
     },
-    [loadProfiles, supabase],
+    [isActiveAccount, loadProfiles, supabase],
   );
 
   const refreshAccount = useCallback(
-    async (accountId: string) => {
+    async (accountId: string, scope?: AccountScope) => {
       if (!supabase) return;
       const [profileResponse, membershipResponse] = await Promise.all([
         supabase.from("profiles").select("*").eq("id", accountId).maybeSingle(),
@@ -147,8 +200,9 @@ export default function AccountRoomPanel() {
           .eq("user_id", accountId)
           .limit(1)
           .maybeSingle(),
-        refreshLedger(accountId),
+        refreshLedger(accountId, scope),
       ]);
+      if (scope && !isActiveAccount(scope)) return;
       if (profileResponse.error) throw profileResponse.error;
       if (membershipResponse.error) throw membershipResponse.error;
       const nextProfile = profileResponse.data;
@@ -160,83 +214,135 @@ export default function AccountRoomPanel() {
         }));
       }
       if (membershipResponse.data) {
-        await refreshRoom(membershipResponse.data.room_id);
+        await refreshRoom(membershipResponse.data.room_id, scope);
       } else {
         setRoom(null);
         setMembers([]);
       }
     },
-    [refreshLedger, refreshRoom, supabase],
+    [isActiveAccount, refreshLedger, refreshRoom, supabase],
   );
 
-  async function searchProfilesByName(query: string): Promise<Profile[]> {
-    const normalized = query.trim();
-    if (!normalized) return [];
-    if (!supabase || !user) return [];
+  async function searchProfilesByName(
+    query: string,
+  ): Promise<ProfileSearchResult[]> {
+    const pattern = buildProfileSearchPattern(query);
+    if (!pattern) return [];
 
-    const { data, error } = await supabase
+    const client = supabase;
+    const actorId = user?.id;
+    if (!client || !actorId) return [];
+    const scope = captureAccountScope(actorId);
+    if (!isActiveAccount(scope)) return [];
+
+    const { data, error } = await client
       .from("profiles")
-      .select("*")
-      .ilike("display_name", `%${normalized}%`)
-      .neq("id", user.id)
+      .select("id,display_name,account_id")
+      .ilike("display_name", pattern)
+      .neq("id", actorId)
       .order("display_name")
       .order("id")
       .limit(8);
-    if (error) throw new Error(errorMessage(error));
+    if (!isActiveAccount(scope)) return [];
+    if (error) throw new Error(ledgerErrorMessage(error));
     return data ?? [];
   }
 
-  async function addOfflineObligation(input: {
-    counterpartyId: string;
-    direction: OfflineDirection;
-    hits: string;
-  }): Promise<void> {
-    if (!supabase || !user) return;
+  async function addOfflineObligation(
+    input: AddOfflineObligationInput,
+  ): Promise<void> {
+    const client = supabase;
+    const actorId = user?.id;
+    if (!client || !actorId) {
+      throw new Error(LOGIN_REQUIRED_ERROR);
+    }
+    const scope = captureAccountScope(actorId);
+    if (!isActiveAccount(scope)) {
+      throw new Error(LOGIN_REQUIRED_ERROR);
+    }
+    if (offlineMutationRef.current) {
+      throw new Error(LEDGER_MUTATION_BUSY_ERROR);
+    }
+
+    const operation: OfflineMutation = {
+      ...scope,
+      token: Symbol(),
+    };
+    offlineMutationRef.current = operation;
 
     setLedgerBusy(true);
     setLedgerError("");
     try {
       const normalizedHits = normalizeOfflineHits(input.hits);
-      const { error } = await supabase.rpc("add_offline_hit_obligation", {
+      const { error } = await client.rpc("add_offline_hit_obligation", {
         counterparty_id: input.counterpartyId,
         direction: input.direction,
         hits: normalizedHits,
       });
-      if (error) throw error;
-      await refreshAccount(user.id);
+      if (error) throw new Error(ledgerErrorMessage(error));
+      if (!isCurrentMutation(operation)) return;
+
+      try {
+        await refreshAccount(actorId, scope);
+      } catch {
+        if (isCurrentMutation(operation)) {
+          setLedgerError(LEDGER_REFRESH_WARNING);
+        }
+        return;
+      }
+      if (!isCurrentMutation(operation)) return;
     } catch (error) {
-      setLedgerError(errorMessage(error));
-      throw error;
+      const safeError = new Error(ledgerErrorMessage(error));
+      if (isCurrentMutation(operation)) {
+        setLedgerError(safeError.message);
+      }
+      throw safeError;
     } finally {
-      setLedgerBusy(false);
+      if (isCurrentMutation(operation)) {
+        offlineMutationRef.current = null;
+        setLedgerBusy(false);
+      }
     }
   }
 
   useEffect(() => {
     if (!supabase) return;
     let active = true;
-    supabase.auth.getSession().then(({ data }) => {
-      if (!active) return;
-      const nextUser = data.session?.user ?? null;
-      setUser(nextUser);
-      if (nextUser) {
-        setAuthOpen(false);
-        setAuthError("");
-      }
-    });
-    const { data } = supabase.auth.onAuthStateChange((_event, session) => {
-      const nextUser = session?.user ?? null;
-      setUser(nextUser);
-      if (nextUser) {
-        setAuthOpen(false);
-        setAuthError("");
-      }
-      if (!session) {
+    let authEventSeen = false;
+
+    function applyAuthenticatedUser(nextUser: User | null) {
+      const nextUserId = nextUser?.id ?? null;
+      const current = activeAccountRef.current;
+      if (current.userId !== nextUserId) {
+        activeAccountRef.current = {
+          userId: nextUserId,
+          generation: current.generation + 1,
+        };
+        offlineMutationRef.current = null;
+        setLedgerBusy(false);
+        setLedgerError("");
+        setLedgerOpen(false);
         setProfile(null);
         setRoom(null);
         setMembers([]);
+        setNames({});
         setObligations([]);
+        setRoomNotice("");
       }
+      setUser(nextUser);
+      if (nextUser) {
+        setAuthOpen(false);
+        setAuthError("");
+      }
+    }
+
+    supabase.auth.getSession().then(({ data }) => {
+      if (!active || authEventSeen) return;
+      applyAuthenticatedUser(data.session?.user ?? null);
+    });
+    const { data } = supabase.auth.onAuthStateChange((_event, session) => {
+      authEventSeen = true;
+      applyAuthenticatedUser(session?.user ?? null);
     });
     return () => {
       active = false;
@@ -246,44 +352,58 @@ export default function AccountRoomPanel() {
 
   useEffect(() => {
     if (!user) return;
+    const scope = captureAccountScope(user.id);
+    if (!isActiveAccount(scope)) return;
     const timeout = window.setTimeout(() => {
-      void refreshAccount(user.id).catch((error) => setRoomNotice(errorMessage(error)));
+      void refreshAccount(user.id, scope).catch((error) => {
+        if (isActiveAccount(scope)) setRoomNotice(errorMessage(error));
+      });
     }, 0);
     return () => window.clearTimeout(timeout);
-  }, [refreshAccount, user]);
+  }, [captureAccountScope, isActiveAccount, refreshAccount, user]);
 
   useEffect(() => {
     if (!supabase || !user) return;
+    const scope = captureAccountScope(user.id);
+    if (!isActiveAccount(scope)) return;
     const channel = supabase
       .channel(`account-room-${user.id}-${room?.id ?? "none"}`)
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "hit_obligations", filter: `debtor_id=eq.${user.id}` },
-        () => void refreshLedger(user.id),
+        () => void refreshLedger(user.id, scope),
       )
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "hit_obligations", filter: `creditor_id=eq.${user.id}` },
-        () => void refreshLedger(user.id),
+        () => void refreshLedger(user.id, scope),
       );
     if (room) {
       channel
         .on(
           "postgres_changes",
           { event: "*", schema: "public", table: "room_members", filter: `room_id=eq.${room.id}` },
-          () => void refreshRoom(room.id),
+          () => void refreshRoom(room.id, scope),
         )
         .on(
           "postgres_changes",
           { event: "*", schema: "public", table: "game_rooms", filter: `id=eq.${room.id}` },
-          () => void refreshRoom(room.id),
+          () => void refreshRoom(room.id, scope),
         );
     }
     channel.subscribe();
     return () => {
       void supabase.removeChannel(channel);
     };
-  }, [refreshLedger, refreshRoom, room, supabase, user]);
+  }, [
+    captureAccountScope,
+    isActiveAccount,
+    refreshLedger,
+    refreshRoom,
+    room,
+    supabase,
+    user,
+  ]);
 
   async function handleAuth(payload: AuthPayload) {
     if (!supabase) return;
@@ -446,7 +566,11 @@ export default function AccountRoomPanel() {
   }
 
   async function recordHit(obligation: Obligation) {
-    if (!supabase || !user || obligation.creditor_id !== user.id) return;
+    const client = supabase;
+    const actorId = user?.id;
+    if (!client || !actorId || obligation.creditor_id !== actorId) return;
+    const scope = captureAccountScope(actorId);
+    if (!isActiveAccount(scope)) return;
     const normalized = String(obligation.remaining_hits);
     if (!/^\d+$/.test(normalized)) return;
     const remaining = BigInt(normalized);
@@ -454,20 +578,23 @@ export default function AccountRoomPanel() {
     setLedgerBusy(true);
     setLedgerError("");
     try {
-      const { error } = await supabase.rpc("record_physical_hit", {
+      const { error } = await client.rpc("record_physical_hit", {
         obligation_id: obligation.id,
         expected_remaining: normalized,
       });
+      if (!isActiveAccount(scope)) return;
       if (error) {
-        setLedgerError(errorMessage(error));
+        setLedgerError(ledgerErrorMessage(error));
       } else {
         setLedgerError("");
       }
-      await refreshAccount(user.id);
+      await refreshAccount(actorId, scope);
     } catch (error) {
-      setLedgerError(errorMessage(error));
+      if (isActiveAccount(scope)) {
+        setLedgerError(ledgerErrorMessage(error));
+      }
     } finally {
-      setLedgerBusy(false);
+      if (isActiveAccount(scope)) setLedgerBusy(false);
     }
   }
 

@@ -2,6 +2,9 @@ export type OfflineDirection = "i_hit" | "i_owe";
 
 export function normalizeDisplayName(value: unknown): string;
 export function normalizeOfflineHits(value: unknown): string;
+export function escapeIlikePattern(value: string): string;
+export function buildProfileSearchPattern(value: unknown): string | null;
+export function ledgerErrorMessage(error: unknown): string;
 export function mapOfflineParties(
   userId: string,
   counterpartyId: string,

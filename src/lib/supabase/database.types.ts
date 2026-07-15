@@ -347,7 +347,7 @@ export type Database = {
       add_offline_hit_obligation: {
         Args: {
           counterparty_id: string;
-          direction: string;
+          direction: "i_hit" | "i_owe";
           hits: string;
         };
         Returns: Database["public"]["Tables"]["hit_obligations"]["Row"];

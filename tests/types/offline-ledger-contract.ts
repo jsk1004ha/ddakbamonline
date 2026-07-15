@@ -1,4 +1,8 @@
 import type { Database } from "../../src/lib/supabase/database.types";
+import type {
+  AddOfflineObligationInput,
+  ProfileSearchResult,
+} from "../../src/lib/ledger/offline-entry.types";
 
 type Equal<Left, Right> =
   (<Value>() => Value extends Left ? 1 : 2) extends
@@ -46,7 +50,11 @@ type OfflineRpc = Database["public"]["Functions"]["add_offline_hit_obligation"];
 export type ExactRpcArgsContract = Assert<
   Equal<
     OfflineRpc["Args"],
-    { counterparty_id: string; direction: string; hits: string }
+    {
+      counterparty_id: string;
+      direction: "i_hit" | "i_owe";
+      hits: string;
+    }
   >
 >;
 export type RpcReturnsObligationContract = Assert<
@@ -66,6 +74,24 @@ export type CreatedByRelationshipContract = Assert<
       isOneToOne: false;
       referencedRelation: "profiles";
       referencedColumns: ["id"];
+    }
+  >
+>;
+
+type ProfileRow = Database["public"]["Tables"]["profiles"]["Row"];
+export type ProfileSearchResultContract = Assert<
+  Equal<
+    ProfileSearchResult,
+    Pick<ProfileRow, "id" | "display_name" | "account_id">
+  >
+>;
+export type AddOfflineObligationInputContract = Assert<
+  Equal<
+    AddOfflineObligationInput,
+    {
+      counterpartyId: string;
+      direction: "i_hit" | "i_owe";
+      hits: string;
     }
   >
 >;
