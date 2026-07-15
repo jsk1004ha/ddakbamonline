@@ -711,6 +711,7 @@ export default function AccountRoomPanel() {
       />
       {user && (
         <HitLedgerDialog
+          key={user.id}
           open={ledgerOpen}
           busy={ledgerBusy}
           error={ledgerError}
