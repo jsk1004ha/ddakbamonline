@@ -405,12 +405,17 @@ begin
     raise exception 'Stale room version';
   end if;
 
+  -- private.enforce_room_capacity() serializes joins with this start lock by
+  -- selecting the same game_rooms row where status = 'waiting' for update.
   select array_agg(ordered.player_id order by ordered.seat)
   into player_ids
   from private.ordered_room_players(target_room) as ordered;
   player_count := coalesce(cardinality(player_ids), 0);
   if player_count < 2 or player_count > 4 then
     raise exception 'A round requires two to four players';
+  end if;
+  if not (caller_id = any (player_ids)) then
+    raise exception 'The room host must occupy a player seat';
   end if;
 
   first_round := coalesce(room_record.state ->> 'schema', '') <> '2';

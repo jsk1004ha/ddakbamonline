@@ -109,6 +109,22 @@ test("RPC implementations lock authority rows and reject stale or unauthenticate
   assert.match(sql, /raise_to.*current_stake/is);
 });
 
+test("round start requires the host to occupy a serialized room seat", () => {
+  const startOffset = sql.search(
+    /create or replace function public\.start_game_round/i,
+  );
+  const actionOffset = sql.search(
+    /create or replace function public\.play_game_action/i,
+  );
+  const startSql = sql.slice(startOffset, actionOffset);
+
+  assert.match(startSql, /caller_id = any \(player_ids\)/i);
+  assert.match(
+    sql,
+    /enforce_room_capacity\(\).*status = 'waiting'.*for update/is,
+  );
+});
+
 test("public room JSON remains card-free and settlement is duplicate-safe", () => {
   assert.match(sql, /jsonb_build_object\(\s*'schema',\s*2/i);
   assert.doesNotMatch(sql, /jsonb_build_object\([\s\S]{0,1500}'hands'/i);
