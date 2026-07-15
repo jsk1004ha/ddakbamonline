@@ -254,6 +254,20 @@ test("keys ledger operations to the current account generation", () => {
   }
 });
 
+test("deduplicates repeated auth events for the same account", () => {
+  const authFunction = findFunction("applyAuthenticatedUser");
+  assert.ok(authFunction, "auth changes must have one account transition gate");
+  const authText = authFunction.getText(sourceFile);
+  const duplicateGuard = authText.indexOf(
+    "if (current.userId === nextUserId) return;",
+  );
+  const userUpdate = authText.indexOf("setUser(nextUser)");
+
+  assert.notEqual(duplicateGuard, -1, "same-account auth events must be ignored");
+  assert.notEqual(userUpdate, -1, "real account changes must still update the user");
+  assert.ok(duplicateGuard < userUpdate, "deduplication must happen before setUser");
+});
+
 test("passes narrow shared offline callbacks to the ledger dialog", () => {
   let ledgerDialog;
 

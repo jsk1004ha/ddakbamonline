@@ -31,6 +31,7 @@ import {
   isSupabaseConfigured,
 } from "@/lib/supabase/client";
 import type { Tables } from "@/lib/supabase/database.types";
+import { retryTransientJwtRequest } from "@/lib/supabase/session-recovery.mjs";
 
 type Profile = Tables<"profiles">;
 type Room = Tables<"game_rooms">;
@@ -150,11 +151,13 @@ export default function AccountRoomPanel() {
   const refreshLedger = useCallback(
     async (accountId: string, scope?: AccountScope) => {
       if (!supabase) return;
-      const { data, error } = await supabase
-        .from("hit_obligations")
-        .select("*")
-        .or(`debtor_id.eq.${accountId},creditor_id.eq.${accountId}`)
-        .order("created_at", { ascending: false });
+      const { data, error } = await retryTransientJwtRequest(() =>
+        supabase
+          .from("hit_obligations")
+          .select("*")
+          .or(`debtor_id.eq.${accountId},creditor_id.eq.${accountId}`)
+          .order("created_at", { ascending: false }),
+      );
       if (scope && !isActiveAccount(scope)) return;
       if (error) throw error;
       const rows = data ?? [];
@@ -193,13 +196,17 @@ export default function AccountRoomPanel() {
     async (accountId: string, scope?: AccountScope) => {
       if (!supabase) return;
       const [profileResponse, membershipResponse] = await Promise.all([
-        supabase.from("profiles").select("*").eq("id", accountId).maybeSingle(),
-        supabase
-          .from("room_members")
-          .select("room_id")
-          .eq("user_id", accountId)
-          .limit(1)
-          .maybeSingle(),
+        retryTransientJwtRequest(() =>
+          supabase.from("profiles").select("*").eq("id", accountId).maybeSingle(),
+        ),
+        retryTransientJwtRequest(() =>
+          supabase
+            .from("room_members")
+            .select("room_id")
+            .eq("user_id", accountId)
+            .limit(1)
+            .maybeSingle(),
+        ),
         refreshLedger(accountId, scope),
       ]);
       if (scope && !isActiveAccount(scope)) return;
@@ -310,22 +317,21 @@ export default function AccountRoomPanel() {
     function applyAuthenticatedUser(nextUser: User | null) {
       const nextUserId = nextUser?.id ?? null;
       const current = activeAccountRef.current;
-      if (current.userId !== nextUserId) {
-        activeAccountRef.current = {
-          userId: nextUserId,
-          generation: current.generation + 1,
-        };
-        offlineMutationRef.current = null;
-        setLedgerBusy(false);
-        setLedgerError("");
-        setLedgerOpen(false);
-        setProfile(null);
-        setRoom(null);
-        setMembers([]);
-        setNames({});
-        setObligations([]);
-        setRoomNotice("");
-      }
+      if (current.userId === nextUserId) return;
+      activeAccountRef.current = {
+        userId: nextUserId,
+        generation: current.generation + 1,
+      };
+      offlineMutationRef.current = null;
+      setLedgerBusy(false);
+      setLedgerError("");
+      setLedgerOpen(false);
+      setProfile(null);
+      setRoom(null);
+      setMembers([]);
+      setNames({});
+      setObligations([]);
+      setRoomNotice("");
       setUser(nextUser);
       if (nextUser) {
         setAuthOpen(false);
