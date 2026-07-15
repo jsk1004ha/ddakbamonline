@@ -43,6 +43,7 @@ work/
 outputs/
 .worktrees/
 .playwright-cli/
+.superpowers/
 
 # typescript
 *.tsbuildinfo
