@@ -103,9 +103,10 @@ export default function AccountAuthDialog({
               type="text"
               value={loginId}
               onChange={(event) => setLoginId(event.target.value)}
-              minLength={4}
+              minLength={2}
               maxLength={20}
-              pattern="[A-Za-z0-9_]{4,20}"
+              pattern="[A-Za-z0-9_가-힣]{2,20}"
+              title="한글, 영문, 숫자, 밑줄 2~20자"
               required
               autoCapitalize="none"
               spellCheck={false}

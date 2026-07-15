@@ -9,7 +9,7 @@ import AccountAuthDialog, {
 import HitLedgerDialog from "@/components/hit-ledger-dialog";
 import OnlineRoomGame from "@/components/online-room-game";
 
-import { accountIdEmail } from "@/lib/auth/account-id";
+import { accountIdEmail, normalizeAccountId } from "@/lib/auth/account-id";
 import {
   buildProfileSearchPattern,
   ledgerErrorMessage,
@@ -408,14 +408,15 @@ export default function AccountRoomPanel() {
     setAuthError("");
     setAuthNotice("");
     try {
-      const email = accountIdEmail(payload.loginId);
+      const accountId = normalizeAccountId(payload.loginId);
+      const email = await accountIdEmail(accountId);
       if (payload.mode === "signup") {
         const cleanName = normalizeDisplayName(payload.displayName);
         const { data, error } = await supabase.auth.signUp({
           email,
           password: payload.password,
           options: {
-            data: { display_name: cleanName },
+            data: { display_name: cleanName, account_id: accountId },
           },
         });
         if (error) throw error;

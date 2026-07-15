@@ -46,7 +46,7 @@ test("account signup validates and stores the normalized display name", () => {
   );
   assert.match(
     signupBranch,
-    /data:\s*\{\s*display_name:\s*cleanName\s*\}/,
+    /data:\s*\{\s*display_name:\s*cleanName,\s*account_id:\s*accountId\s*\}/,
   );
   assert.ok(
     signupBranch.indexOf("normalizeDisplayName(payload.displayName)") <

@@ -21,36 +21,47 @@ const {
   validateAccountId,
 } = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString("base64")}`);
 
-test("normalizes account IDs by trimming and lowercasing", () => {
+test("normalizes account IDs by trimming, lowercasing, and composing Hangul", () => {
   assert.equal(normalizeAccountId("  Player_01  "), "player_01");
+  assert.equal(normalizeAccountId("  한글  "), "한글");
 });
 
 test("accepts valid account IDs", () => {
-  assert.equal(validateAccountId("abcd"), true);
+  assert.equal(validateAccountId("ab"), true);
   assert.equal(validateAccountId("player_01"), true);
+  assert.equal(validateAccountId("한글"), true);
+  assert.equal(validateAccountId("딱밤_01"), true);
 });
 
 test("rejects account IDs outside the supported format", () => {
   for (const accountId of [
-    "abc",
+    "a",
     "a".repeat(21),
-    "한글id",
     "user-name",
     "user name",
+    "아이디🙂",
   ]) {
     assert.equal(validateAccountId(accountId), false, accountId);
   }
 });
 
-test("creates the internal account email from a normalized ID", () => {
+test("keeps the legacy internal email for ASCII account IDs", async () => {
   assert.equal(
-    accountIdEmail(" Player_01 "),
+    await accountIdEmail(" Player_01 "),
     "player_01@accounts.ddakbamonline.com",
   );
 });
 
-test("rejects invalid IDs when creating an account email", () => {
-  assert.throws(() => accountIdEmail("bad-id"), /아이디/);
+test("creates a deterministic opaque internal email for Korean account IDs", async () => {
+  const email = await accountIdEmail(" 한글아이디 ");
+
+  assert.match(email, /^u-[a-z0-9_-]{43}@accounts\.ddakbamonline\.com$/);
+  assert.equal(email, await accountIdEmail("한글아이디"));
+  assert.doesNotMatch(email, /한글아이디/);
+});
+
+test("rejects invalid IDs when creating an account email", async () => {
+  await assert.rejects(() => accountIdEmail("bad-id"), /아이디/);
 });
 
 test("keeps account authentication ID-only in the user-facing UI", () => {
@@ -64,13 +75,14 @@ test("keeps account authentication ID-only in the user-facing UI", () => {
   assert.doesNotMatch(roomPanelSource, /user\.email/);
   assert.match(authDialogSource, /loginId/);
   assert.match(authDialogSource, /type=["']text["']/);
-  assert.match(authDialogSource, /minLength=\{4\}/);
+  assert.match(authDialogSource, /minLength=\{2\}/);
   assert.match(authDialogSource, /maxLength=\{20\}/);
-  assert.match(authDialogSource, /pattern=["']\[A-Za-z0-9_\]\{4,20\}["']/);
+  assert.match(authDialogSource, /pattern=["']\[A-Za-z0-9_가-힣\]\{2,20\}["']/);
   assert.match(authDialogSource, /autoCapitalize=["']none["']/);
   assert.match(authDialogSource, /spellCheck=\{false\}/);
   assert.match(authDialogSource, /autoComplete=["']username["']/);
   assert.match(authDialogSource, /minLength=\{8\}/);
-  assert.match(roomPanelSource, /accountIdEmail\(payload\.loginId\)/);
+  assert.match(roomPanelSource, /await accountIdEmail\(accountId\)/);
+  assert.match(roomPanelSource, /data:\s*\{\s*display_name:\s*cleanName,\s*account_id:\s*accountId\s*\}/);
   assert.match(roomPanelSource, /setAuthError\(authErrorMessage\(error\)\)/);
 });
