@@ -442,7 +442,13 @@ export default function AccountRoomPanel() {
 
   return (
     <>
-      <aside className="accountRoom">
+      <aside
+        className={
+          room?.status === "playing"
+            ? "accountRoom accountRoom--playing"
+            : "accountRoom"
+        }
+      >
         {!user ? (
           <section className="online-shell__gate">
             <span className="eyebrow">SUPABASE REALTIME</span>
@@ -498,11 +504,13 @@ export default function AccountRoomPanel() {
               return <li key={seat} className={member ? "is-filled" : ""}><span>{seat + 1}</span><b>{member ? names[member.user_id] ?? "플레이어" : "빈 자리"}</b>{member && <em>{member.ready ? "준비" : "대기"}{member.user_id === room.host_id ? " · 방장" : ""}</em>}</li>;
             })}
           </ol>
-          <div className="accountRoom__actions">
-            {room.status === "waiting" && <button className={mine?.ready ? "accountRoom__ready is-ready" : "accountRoom__ready"} type="button" disabled={roomBusy} onClick={() => void toggleReady()}>{mine?.ready ? "준비 완료" : "준비하기"}</button>}
-            {room.host_id === user.id && room.status === "waiting" && <button className="accountRoom__primary" type="button" disabled={roomBusy || !startable} onClick={() => void startRoom()}>4인까지 시작</button>}
-            <button className="accountRoom__ghost" type="button" disabled={roomBusy || room.status === "playing"} onClick={() => void leaveRoom()}>{room.status === "playing" ? "판 진행 중" : room.host_id === user.id ? "방 닫기" : "나가기"}</button>
-          </div>
+          {room.status === "waiting" && (
+            <div className="accountRoom__actions">
+              <button className={mine?.ready ? "accountRoom__ready is-ready" : "accountRoom__ready"} type="button" disabled={roomBusy} onClick={() => void toggleReady()}>{mine?.ready ? "준비 완료" : "준비하기"}</button>
+              {room.host_id === user.id && <button className="accountRoom__primary" type="button" disabled={roomBusy || !startable} onClick={() => void startRoom()}>4인까지 시작</button>}
+              <button className="accountRoom__ghost" type="button" disabled={roomBusy} onClick={() => void leaveRoom()}>{room.host_id === user.id ? "방 닫기" : "나가기"}</button>
+            </div>
+          )}
         </section>
       )}
 
@@ -561,6 +569,8 @@ function PanelStyles() {
     .accountRoom__status{padding:6px 9px;border-radius:999px;background:#263631;color:#bfcac4;font-size:11px;font-weight:800}.accountRoom__status--playing{background:#553118;color:#ffc57e}
     .accountRoom__roster{list-style:none;padding:0;margin:12px 0;display:grid;grid-template-columns:repeat(2,1fr);gap:7px}.accountRoom__roster li{display:grid;grid-template-columns:25px 1fr;align-items:center;padding:9px;background:#101918;border:1px dashed #384641;border-radius:10px;color:#69726e}.accountRoom__roster li>span{grid-row:1/3;display:grid;place-items:center;width:20px;height:20px;border-radius:6px;background:#26312e;font-size:10px}.accountRoom__roster li b{font-size:12px}.accountRoom__roster li em{font-style:normal;font-size:9px;color:#7d8a85}.accountRoom__roster li.is-filled{border-style:solid;color:#eef1ed}.accountRoom__roster li.is-filled>span{background:#91642e;color:#fff}.accountRoom__actions{display:flex;flex-wrap:wrap;gap:7px}.accountRoom__actions button{flex:1}
     .accountRoom__notice{margin:12px 0 0;padding:9px 11px;border-left:3px solid #d7a95e;background:#2a251c;color:#ead7b8;font-size:12px}
+    .accountRoom--playing{padding:14px 18px}.accountRoom--playing .accountRoom__stats{margin:9px 0}.accountRoom--playing .accountRoom__stats span{padding:6px 5px}.accountRoom--playing .accountRoom__room{padding-top:10px;margin-top:10px}.accountRoom--playing .accountRoom__roster{grid-template-columns:repeat(4,minmax(0,1fr));gap:5px;margin:8px 0 0}.accountRoom--playing .accountRoom__roster li{padding:7px}
+    @media(max-width:860px){.accountRoom--playing .accountRoom__roster{grid-template-columns:repeat(2,minmax(0,1fr))}}
     @media(max-width:520px){.accountRoom{padding:16px}.accountRoom__header{align-items:flex-start;flex-direction:column}.accountRoom__headerActions{width:100%}.accountRoom__headerActions button{flex:1;min-height:44px}.accountRoom__auth{grid-template-columns:1fr}.accountRoom__auth>*{grid-column:1}.accountRoom__stats{grid-template-columns:repeat(2,1fr)}.accountRoom__roster{grid-template-columns:1fr}}
   `}</style>;
 }
