@@ -27,6 +27,23 @@ export function buildProfileSearchPattern(value) {
   return `%${escapeIlikePattern(normalized)}%`;
 }
 
+export function filterObligationsByName(obligations, names, query) {
+  const normalizedQuery = query.trim().toLocaleLowerCase("ko-KR");
+  if (!normalizedQuery) return obligations;
+
+  return obligations.filter((obligation) => {
+    const creditorName = names[obligation.creditor_id] ?? "";
+    const debtorName = names[obligation.debtor_id] ?? "";
+    return [creditorName, debtorName].some((name) =>
+      name.toLocaleLowerCase("ko-KR").includes(normalizedQuery),
+    );
+  });
+}
+
+export function mergeObligationById(obligations, incoming) {
+  return [incoming, ...obligations.filter((item) => item.id !== incoming.id)];
+}
+
 export function ledgerErrorMessage(error) {
   const message =
     error instanceof Error

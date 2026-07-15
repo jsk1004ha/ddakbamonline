@@ -32,10 +32,25 @@ export type OfflineEntryUiAction =
   | { type: "submit_succeeded"; requestToken: number; notice: string }
   | { type: "reset"; requestToken: number };
 
+type NamedObligation = {
+  id: string;
+  creditor_id: string;
+  debtor_id: string;
+};
+
 export function normalizeDisplayName(value: unknown): string;
 export function normalizeOfflineHits(value: unknown): string;
 export function escapeIlikePattern(value: string): string;
 export function buildProfileSearchPattern(value: unknown): string | null;
+export function filterObligationsByName<T extends NamedObligation>(
+  obligations: T[],
+  names: Record<string, string>,
+  query: string,
+): T[];
+export function mergeObligationById<T extends { id: string }>(
+  obligations: T[],
+  incoming: T,
+): T[];
 export function ledgerErrorMessage(error: unknown): string;
 export function mapOfflineParties(
   userId: string,

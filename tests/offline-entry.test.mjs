@@ -4,10 +4,64 @@ import test from "node:test";
 import * as offlineEntry from "../src/lib/ledger/offline-entry.mjs";
 
 const {
+  filterObligationsByName,
   mapOfflineParties,
+  mergeObligationById,
   normalizeDisplayName,
   normalizeOfflineHits,
 } = offlineEntry;
+
+const obligations = [
+  { id: "old", creditor_id: "creditor", debtor_id: "debtor" },
+  {
+    id: "other",
+    creditor_id: "other-creditor",
+    debtor_id: "other-debtor",
+  },
+];
+const obligationNames = {
+  creditor: "민수",
+  debtor: "영희",
+  "other-creditor": "지수",
+  "other-debtor": "철수",
+};
+
+test("filters global obligations by either display name", () => {
+  assert.deepEqual(
+    filterObligationsByName(obligations, obligationNames, " 민 "),
+    [obligations[0]],
+  );
+  assert.deepEqual(
+    filterObligationsByName(obligations, obligationNames, "영희"),
+    [obligations[0]],
+  );
+  assert.deepEqual(
+    filterObligationsByName(obligations, obligationNames, ""),
+    obligations,
+  );
+  assert.deepEqual(
+    filterObligationsByName(obligations, obligationNames, "없음"),
+    [],
+  );
+});
+
+test("merges an RPC obligation by id at the front", () => {
+  const replacement = { ...obligations[0], remaining_hits: "3" };
+  assert.deepEqual(mergeObligationById(obligations, replacement), [
+    replacement,
+    obligations[1],
+  ]);
+
+  const created = {
+    id: "new",
+    creditor_id: "creditor",
+    debtor_id: "debtor",
+  };
+  assert.deepEqual(mergeObligationById(obligations, created), [
+    created,
+    ...obligations,
+  ]);
+});
 
 test("normalizeDisplayName trims a valid name", () => {
   assert.equal(normalizeDisplayName("  선우  "), "선우");
