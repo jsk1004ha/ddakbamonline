@@ -2,6 +2,11 @@ import assert from "node:assert/strict";
 
 import { createClient } from "@supabase/supabase-js";
 
+import {
+  runCleanupSteps,
+  throwQaOrCleanupError,
+} from "./live-authority-cleanup.mjs";
+
 const requiredEnv = [
   "NEXT_PUBLIC_SUPABASE_URL",
   "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY",
@@ -61,44 +66,78 @@ async function provisionQaUser(accountId) {
 }
 
 async function cleanupQaData() {
-  if (offlineObligationIds.length > 0) {
-    assert.ifError(
-      (
-        await admin
-          .from("hit_obligations")
-          .delete()
-          .in("id", offlineObligationIds)
-      ).error,
-    );
+  let resultIds = [];
+  const cleanupSteps = [
+    {
+      label: "offline obligations",
+      run: async () => {
+        if (offlineObligationIds.length === 0) return;
+        assert.ifError(
+          (
+            await admin
+              .from("hit_obligations")
+              .delete()
+              .in("id", offlineObligationIds)
+          ).error,
+        );
+      },
+    },
+    {
+      label: "game result discovery",
+      run: async () => {
+        if (createdUserIds.length === 0) return;
+        const { data: results, error } = await admin
+          .from("game_results")
+          .select("id")
+          .contains("player_ids", createdUserIds);
+        assert.ifError(error);
+        resultIds = (results ?? []).map((result) => result.id);
+      },
+    },
+    {
+      label: "game obligations",
+      run: async () => {
+        if (resultIds.length === 0) return;
+        assert.ifError(
+          (
+            await admin
+              .from("hit_obligations")
+              .delete()
+              .in("game_result_id", resultIds)
+          ).error,
+        );
+      },
+    },
+    {
+      label: "game results",
+      run: async () => {
+        if (resultIds.length === 0) return;
+        assert.ifError(
+          (await admin.from("game_results").delete().in("id", resultIds)).error,
+        );
+      },
+    },
+    {
+      label: "room",
+      run: async () => {
+        if (!qaRoomId) return;
+        assert.ifError(
+          (await admin.from("game_rooms").delete().eq("id", qaRoomId)).error,
+        );
+      },
+    },
+  ];
+
+  for (const [index, userId] of [...createdUserIds].reverse().entries()) {
+    cleanupSteps.push({
+      label: `disposable auth user ${index + 1}`,
+      run: async () => {
+        assert.ifError((await admin.auth.admin.deleteUser(userId)).error);
+      },
+    });
   }
 
-  if (createdUserIds.length > 0) {
-    const { data: results, error: resultsError } = await admin
-      .from("game_results")
-      .select("id")
-      .contains("player_ids", createdUserIds);
-    assert.ifError(resultsError);
-    const resultIds = results.map((result) => result.id);
-    if (resultIds.length > 0) {
-      assert.ifError(
-        (await admin.from("hit_obligations").delete().in("game_result_id", resultIds))
-          .error,
-      );
-      assert.ifError(
-        (await admin.from("game_results").delete().in("id", resultIds)).error,
-      );
-    }
-  }
-
-  if (qaRoomId) {
-    assert.ifError(
-      (await admin.from("game_rooms").delete().eq("id", qaRoomId)).error,
-    );
-  }
-
-  for (const userId of createdUserIds.reverse()) {
-    assert.ifError((await admin.auth.admin.deleteUser(userId)).error);
-  }
+  await runCleanupSteps(cleanupSteps);
 }
 
 function expectError(result, label) {
@@ -201,6 +240,7 @@ async function playRoundToShowdown(roomId, hostId, guestId) {
   return room;
 }
 
+let qaError = null;
 try {
 const qaSuffix = crypto.randomUUID().replaceAll("-", "").slice(0, 10);
 const hostAccountId = `qa_host_${qaSuffix}`;
@@ -600,6 +640,15 @@ console.log(
     offlinePhysicalHitRecorded: true,
   }),
 );
-} finally {
-  await cleanupQaData();
+} catch (error) {
+  qaError = error;
 }
+
+let cleanupError = null;
+try {
+  await cleanupQaData();
+} catch (error) {
+  cleanupError = error;
+}
+
+throwQaOrCleanupError(qaError, cleanupError);

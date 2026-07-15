@@ -10,8 +10,12 @@ const script = await readFile(
 test("live authority QA provisions disposable users and always cleans them up", () => {
   assert.match(script, /"SUPABASE_SERVICE_ROLE_KEY"/);
   assert.match(script, /auth\.admin\.createUser/);
+  assert.match(script, /from "\.\/live-authority-cleanup\.mjs"/);
   assert.match(script, /try\s*\{/);
-  assert.match(script, /finally\s*\{[\s\S]*cleanupQaData\(\)/);
+  assert.match(script, /catch \(error\) \{[\s\S]*qaError = error/);
+  assert.match(script, /catch \(error\) \{[\s\S]*cleanupError = error/);
+  assert.match(script, /throwQaOrCleanupError\(qaError, cleanupError\)/);
+  assert.doesNotMatch(script, /finally\s*\{[\s\S]*cleanupQaData\(\)/);
   assert.match(script, /auth\.admin\.deleteUser/);
   assert.doesNotMatch(script, /"QA_HOST_ID"|"QA_GUEST_ID"/);
 });
@@ -131,6 +135,16 @@ test("offline IDs are deleted first and the summary exposes only safe checks", (
   assert.ok(offlineDelete < resultDelete, "offline rows must precede game results");
   assert.ok(offlineDelete < roomDelete, "offline rows must precede rooms");
   assert.ok(offlineDelete < userDelete, "offline rows must precede profile/user cleanup");
+  assert.match(cleanup, /runCleanupSteps\(cleanupSteps\)/);
+  assert.match(
+    cleanup,
+    /\[\.\.\.createdUserIds\]\.reverse\(\)[\s\S]*cleanupSteps\.push[\s\S]*auth\.admin\.deleteUser/,
+  );
+  const cleanupLabels = [...cleanup.matchAll(/label:\s*[`"]([^`"]+)[`"]?/g)].map(
+    (match) => match[1],
+  );
+  assert.ok(cleanupLabels.length >= 6, "expected safe labels for cleanup steps");
+  assert.doesNotMatch(cleanupLabels.join(" "), /password|secret|token|key|\b(?:user|room|obligation)Id\b/i);
 
   const summary = script.match(
     /console\.log\(\s*JSON\.stringify\(\{([\s\S]*?)\}\)\s*,?\s*\);/,
