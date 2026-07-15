@@ -6,6 +6,7 @@ import type { User } from "@supabase/supabase-js";
 import AccountAuthDialog, {
   type AuthPayload,
 } from "@/components/account-auth-dialog";
+import HitLedgerDialog from "@/components/hit-ledger-dialog";
 import OnlineRoomGame, { createOnlineRound } from "@/components/online-room-game";
 
 import {
@@ -34,16 +35,6 @@ function errorMessage(error: unknown): string {
   return error.message;
 }
 
-function quantityToBigInt(value: string | number): bigint | null {
-  const normalized = String(value);
-  return /^\d+$/.test(normalized) ? BigInt(normalized) : null;
-}
-
-function formatQuantity(value: string | number): string {
-  const exact = quantityToBigInt(value);
-  return exact === null ? String(value) : exact.toLocaleString("ko-KR");
-}
-
 export default function AccountRoomPanel() {
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
   const [user, setUser] = useState<User | null>(null);
@@ -55,10 +46,13 @@ export default function AccountRoomPanel() {
   const [authOpen, setAuthOpen] = useState(false);
   const [authBusy, setAuthBusy] = useState(false);
   const [authError, setAuthError] = useState("");
+  const [ledgerOpen, setLedgerOpen] = useState(false);
+  const [ledgerBusy, setLedgerBusy] = useState(false);
+  const [ledgerError, setLedgerError] = useState("");
   const [roomCode, setRoomCode] = useState("");
   const [maxPlayers, setMaxPlayers] = useState(4);
-  const [busy, setBusy] = useState(false);
-  const [notice, setNotice] = useState("");
+  const [roomBusy, setRoomBusy] = useState(false);
+  const [roomNotice, setRoomNotice] = useState("");
 
   const loadProfiles = useCallback(
     async (ids: string[]) => {
@@ -182,7 +176,7 @@ export default function AccountRoomPanel() {
   useEffect(() => {
     if (!user) return;
     const timeout = window.setTimeout(() => {
-      void refreshAccount(user.id).catch((error) => setNotice(errorMessage(error)));
+      void refreshAccount(user.id).catch((error) => setRoomNotice(errorMessage(error)));
     }, 0);
     return () => window.clearTimeout(timeout);
   }, [refreshAccount, user]);
@@ -256,8 +250,8 @@ export default function AccountRoomPanel() {
 
   async function createRoom() {
     if (!supabase || !user) return;
-    setBusy(true);
-    setNotice("");
+    setRoomBusy(true);
+    setRoomNotice("");
     try {
       let created: Room | null = null;
       for (let attempt = 0; attempt < 5 && !created; attempt += 1) {
@@ -278,11 +272,11 @@ export default function AccountRoomPanel() {
         throw error;
       }
       await refreshRoom(created.id);
-      setNotice(`방 ${created.code}를 만들었어요.`);
+      setRoomNotice(`방 ${created.code}를 만들었어요.`);
     } catch (error) {
-      setNotice(errorMessage(error));
+      setRoomNotice(errorMessage(error));
     } finally {
-      setBusy(false);
+      setRoomBusy(false);
     }
   }
 
@@ -291,11 +285,11 @@ export default function AccountRoomPanel() {
     if (!supabase || !user) return;
     const code = normalizeRoomCode(roomCode);
     if (code.length !== 6) {
-      setNotice("6자리 방 코드를 입력해 주세요.");
+      setRoomNotice("6자리 방 코드를 입력해 주세요.");
       return;
     }
-    setBusy(true);
-    setNotice("");
+    setRoomBusy(true);
+    setRoomNotice("");
     try {
       const { data: target, error: roomError } = await supabase
         .from("game_rooms")
@@ -317,11 +311,11 @@ export default function AccountRoomPanel() {
       if (error) throw error;
       await refreshRoom(target.id);
       setRoomCode("");
-      setNotice(`${target.code} 방에 입장했어요.`);
+      setRoomNotice(`${target.code} 방에 입장했어요.`);
     } catch (error) {
-      setNotice(errorMessage(error));
+      setRoomNotice(errorMessage(error));
     } finally {
-      setBusy(false);
+      setRoomBusy(false);
     }
   }
 
@@ -329,20 +323,20 @@ export default function AccountRoomPanel() {
     if (!supabase || !user || !room) return;
     const mine = members.find((member) => member.user_id === user.id);
     if (!mine) return;
-    setBusy(true);
+    setRoomBusy(true);
     const { error } = await supabase
       .from("room_members")
       .update({ ready: !mine.ready })
       .eq("room_id", room.id)
       .eq("user_id", user.id);
-    if (error) setNotice(errorMessage(error));
+    if (error) setRoomNotice(errorMessage(error));
     else await refreshRoom(room.id);
-    setBusy(false);
+    setRoomBusy(false);
   }
 
   async function leaveRoom() {
     if (!supabase || !user || !room) return;
-    setBusy(true);
+    setRoomBusy(true);
     const response = room.host_id === user.id
       ? await supabase.from("game_rooms").delete().eq("id", room.id)
       : await supabase
@@ -350,22 +344,22 @@ export default function AccountRoomPanel() {
           .delete()
           .eq("room_id", room.id)
           .eq("user_id", user.id);
-    if (response.error) setNotice(errorMessage(response.error));
+    if (response.error) setRoomNotice(errorMessage(response.error));
     else {
       setRoom(null);
       setMembers([]);
-      setNotice(room.host_id === user.id ? "방을 닫았어요." : "방에서 나왔어요.");
+      setRoomNotice(room.host_id === user.id ? "방을 닫았어요." : "방에서 나왔어요.");
     }
-    setBusy(false);
+    setRoomBusy(false);
   }
 
   async function startRoom() {
     if (!supabase || !user || !room || room.host_id !== user.id) return;
     if (!canStartRoom(members, room.max_players)) {
-      setNotice("2~4명이 모두 준비해야 시작할 수 있어요.");
+      setRoomNotice("2~4명이 모두 준비해야 시작할 수 있어요.");
       return;
     }
-    setBusy(true);
+    setRoomBusy(true);
     const onlineRound = createOnlineRound(
       [...members]
         .sort((left, right) => left.seat - right.seat)
@@ -382,37 +376,49 @@ export default function AccountRoomPanel() {
       .eq("version", room.version)
       .select("id")
       .maybeSingle();
-    if (error) setNotice(errorMessage(error));
+    if (error) setRoomNotice(errorMessage(error));
     else if (!data) {
-      setNotice("참가자 상태가 바뀌었어요. 최신 방 상태에서 다시 시작해 주세요.");
+      setRoomNotice("참가자 상태가 바뀌었어요. 최신 방 상태에서 다시 시작해 주세요.");
       await refreshRoom(room.id);
     }
     else {
       await refreshRoom(room.id);
-      setNotice("온라인 계정 대전을 시작했어요.");
+      setRoomNotice("온라인 계정 대전을 시작했어요.");
     }
-    setBusy(false);
+    setRoomBusy(false);
   }
 
   async function recordHit(obligation: Obligation) {
     if (!supabase || !user || obligation.creditor_id !== user.id) return;
-    const remaining = quantityToBigInt(obligation.remaining_hits);
-    if (remaining === null || remaining <= BigInt(0)) return;
-    setBusy(true);
-    const { data, error } = await supabase
-      .from("hit_obligations")
-      .update({
-        remaining_hits: (remaining - BigInt(1)).toString(),
-        delivered_hits: obligation.delivered_hits + 1,
-      })
-      .eq("id", obligation.id)
-      .eq("remaining_hits", obligation.remaining_hits)
-      .select("id")
-      .maybeSingle();
-    if (error) setNotice(errorMessage(error));
-    else if (!data) setNotice("다른 기기에서 먼저 기록했어요. 최신 값으로 새로고침했어요.");
-    await refreshLedger(user.id);
-    setBusy(false);
+    const normalized = String(obligation.remaining_hits);
+    if (!/^\d+$/.test(normalized)) return;
+    const remaining = BigInt(normalized);
+    if (remaining <= BigInt(0)) return;
+    setLedgerBusy(true);
+    setLedgerError("");
+    try {
+      const { data, error } = await supabase
+        .from("hit_obligations")
+        .update({
+          remaining_hits: (remaining - BigInt(1)).toString(),
+          delivered_hits: obligation.delivered_hits + 1,
+        })
+        .eq("id", obligation.id)
+        .eq("remaining_hits", obligation.remaining_hits)
+        .select("id")
+        .maybeSingle();
+      if (error) setLedgerError(errorMessage(error));
+      else if (!data) {
+        setLedgerError("다른 기기에서 먼저 기록했어요. 최신 값으로 새로고침했어요.");
+      } else {
+        setLedgerError("");
+      }
+      await refreshAccount(user.id);
+    } catch (error) {
+      setLedgerError(errorMessage(error));
+    } finally {
+      setLedgerBusy(false);
+    }
   }
 
   if (!isSupabaseConfigured() || !supabase) {
@@ -449,7 +455,10 @@ export default function AccountRoomPanel() {
           <>
       <header className="accountRoom__header">
         <div><small>ACCOUNT LEDGER</small><h2>{profile?.display_name ?? user.email ?? "플레이어"}</h2></div>
-        <button className="accountRoom__ghost" type="button" disabled={busy} onClick={() => void supabase.auth.signOut()}>로그아웃</button>
+        <div className="accountRoom__headerActions">
+          <button className="accountRoom__ledgerTrigger" type="button" onClick={() => { setLedgerError(""); setLedgerOpen(true); }}>딱밤 장부 · {obligations.length}건</button>
+          <button className="accountRoom__ghost" type="button" disabled={roomBusy} onClick={() => void supabase.auth.signOut()}>로그아웃</button>
+        </div>
       </header>
 
       <div className="accountRoom__stats" aria-label="계정 전적">
@@ -464,12 +473,12 @@ export default function AccountRoomPanel() {
           <div><small>ONLINE ROOM</small><h3 id="room-heading">2~4인 계정 방</h3></div>
           <div className="accountRoom__create">
             <label>최대 인원<select value={maxPlayers} onChange={(event) => setMaxPlayers(Number(event.target.value))}><option value={2}>2명</option><option value={3}>3명</option><option value={4}>4명</option></select></label>
-            <button className="accountRoom__primary" type="button" disabled={busy} onClick={() => void createRoom()}>새 방 만들기</button>
+            <button className="accountRoom__primary" type="button" disabled={roomBusy} onClick={() => void createRoom()}>새 방 만들기</button>
           </div>
           <form className="accountRoom__join" onSubmit={joinRoom}>
             <label htmlFor="room-code">방 코드</label>
             <input id="room-code" value={roomCode} onChange={(event) => setRoomCode(normalizeRoomCode(event.target.value))} maxLength={6} placeholder="ABC234" autoComplete="off" />
-            <button className="accountRoom__ghost" disabled={busy}>입장</button>
+            <button className="accountRoom__ghost" disabled={roomBusy}>입장</button>
           </form>
         </section>
       ) : (
@@ -485,9 +494,9 @@ export default function AccountRoomPanel() {
             })}
           </ol>
           <div className="accountRoom__actions">
-            {room.status === "waiting" && <button className={mine?.ready ? "accountRoom__ready is-ready" : "accountRoom__ready"} type="button" disabled={busy} onClick={() => void toggleReady()}>{mine?.ready ? "준비 완료" : "준비하기"}</button>}
-            {room.host_id === user.id && room.status === "waiting" && <button className="accountRoom__primary" type="button" disabled={busy || !startable} onClick={() => void startRoom()}>4인까지 시작</button>}
-            <button className="accountRoom__ghost" type="button" disabled={busy || room.status === "playing"} onClick={() => void leaveRoom()}>{room.status === "playing" ? "판 진행 중" : room.host_id === user.id ? "방 닫기" : "나가기"}</button>
+            {room.status === "waiting" && <button className={mine?.ready ? "accountRoom__ready is-ready" : "accountRoom__ready"} type="button" disabled={roomBusy} onClick={() => void toggleReady()}>{mine?.ready ? "준비 완료" : "준비하기"}</button>}
+            {room.host_id === user.id && room.status === "waiting" && <button className="accountRoom__primary" type="button" disabled={roomBusy || !startable} onClick={() => void startRoom()}>4인까지 시작</button>}
+            <button className="accountRoom__ghost" type="button" disabled={roomBusy || room.status === "playing"} onClick={() => void leaveRoom()}>{room.status === "playing" ? "판 진행 중" : room.host_id === user.id ? "방 닫기" : "나가기"}</button>
           </div>
         </section>
       )}
@@ -499,23 +508,11 @@ export default function AccountRoomPanel() {
           userId={user.id}
           onRefreshRoom={refreshRoom}
           onRefreshLedger={refreshLedger}
-          onNotice={setNotice}
+          onNotice={setRoomNotice}
         />
       )}
 
-      <section className="accountRoom__ledger" aria-labelledby="ledger-heading">
-        <div className="accountRoom__ledgerTitle"><div><small>NO NETTING</small><h3 id="ledger-heading">계정별 딱밤 장부</h3></div><span>{obligations.length}건</span></div>
-        {obligations.length === 0 ? <p className="accountRoom__muted">아직 계정에 남은 딱밤 약속이 없어요.</p> : (
-          <ul>
-            {obligations.map((item) => {
-              const remaining = quantityToBigInt(item.remaining_hits);
-              return <li key={item.id}><div><b>{names[item.debtor_id] ?? "플레이어"} <i>→</i> {names[item.creditor_id] ?? "플레이어"}</b><span>남음 {formatQuantity(item.remaining_hits)} · 완료 {item.delivered_hits.toLocaleString("ko-KR")}</span></div>{item.creditor_id === user.id && remaining !== null && remaining > BigInt(0) && <button type="button" disabled={busy} onClick={() => void recordHit(item)}>1회 기록</button>}</li>;
-            })}
-          </ul>
-        )}
-      </section>
-
-      {notice && <p className="accountRoom__notice" role="status">{notice}</p>}
+      {roomNotice && <p className="accountRoom__notice" role="status">{roomNotice}</p>}
           </>
         )}
         <PanelStyles />
@@ -527,6 +524,19 @@ export default function AccountRoomPanel() {
         onClose={() => setAuthOpen(false)}
         onSubmit={handleAuth}
       />
+      {user && (
+        <HitLedgerDialog
+          open={ledgerOpen}
+          busy={ledgerBusy}
+          error={ledgerError}
+          userId={user.id}
+          profile={profile}
+          names={names}
+          obligations={obligations}
+          onClose={() => setLedgerOpen(false)}
+          onRecordHit={recordHit}
+        />
+      )}
     </>
   );
 }
@@ -534,17 +544,18 @@ export default function AccountRoomPanel() {
 function PanelStyles() {
   return <style jsx global>{`
     .accountRoom{color:#f6ead2;background:linear-gradient(150deg,rgba(28,40,37,.97),rgba(13,20,20,.98));border:1px solid rgba(221,180,106,.28);border-radius:22px;padding:20px;box-shadow:0 24px 80px rgba(0,0,0,.32);font-family:var(--font-sans,Arial,sans-serif)}
-    .accountRoom--empty{display:flex;gap:10px;flex-direction:column}.accountRoom--empty span,.accountRoom__muted{color:#aaafa8;font-size:13px}
-    .accountRoom__header,.accountRoom__roomTitle,.accountRoom__ledgerTitle{display:flex;align-items:center;justify-content:space-between;gap:14px}.accountRoom small,.auth-dialog small{display:block;color:#d5a65e;font-size:10px;font-weight:800;letter-spacing:.18em}.accountRoom h2,.accountRoom h3,.auth-dialog h2{margin:3px 0 0}.accountRoom h2,.auth-dialog h2{font-size:20px}.accountRoom h3{font-size:17px}
+    .accountRoom--empty{display:flex;gap:10px;flex-direction:column}.accountRoom--empty span{color:#aaafa8;font-size:13px}
+    .accountRoom__header,.accountRoom__roomTitle{display:flex;align-items:center;justify-content:space-between;gap:14px}.accountRoom small,.auth-dialog small{display:block;color:#d5a65e;font-size:10px;font-weight:800;letter-spacing:.18em}.accountRoom h2,.accountRoom h3,.auth-dialog h2{margin:3px 0 0}.accountRoom h2,.auth-dialog h2{font-size:20px}.accountRoom h3{font-size:17px}
     .accountRoom button,.accountRoom input,.accountRoom select,.auth-dialog button,.auth-dialog input,.auth-dialog select{font:inherit}.accountRoom button,.auth-dialog button{cursor:pointer}.accountRoom button:disabled,.auth-dialog button:disabled{cursor:not-allowed;opacity:.46}
     .accountRoom__tabs{display:flex;padding:3px;background:#0c1413;border-radius:10px}.accountRoom__tabs button{border:0;background:transparent;color:#929b96;padding:7px 9px;border-radius:7px;font-size:12px}.accountRoom__tabs button[aria-selected=true]{background:#2a3c36;color:#fff}
     .accountRoom__auth{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:16px}.accountRoom__auth label:first-child:nth-last-child(4){grid-column:1/-1}.accountRoom label,.auth-dialog label{color:#b8c0bb;font-size:11px;font-weight:700}.accountRoom input,.accountRoom select,.auth-dialog input,.auth-dialog select{width:100%;box-sizing:border-box;margin-top:5px;padding:10px 11px;color:#f8eedb;background:#101b19;border:1px solid #34443f;border-radius:10px;outline:none}.accountRoom input:focus,.accountRoom select:focus,.auth-dialog input:focus,.auth-dialog select:focus{border-color:#d7a95e;box-shadow:0 0 0 3px rgba(215,169,94,.12)}
     .accountRoom__primary,.accountRoom__ghost,.accountRoom__ready{border-radius:10px;padding:10px 13px;font-weight:800}.accountRoom__primary{border:1px solid #e1b56b;background:linear-gradient(#e1b56b,#b97a32);color:#20170d}.accountRoom__ghost{border:1px solid #465650;background:transparent;color:#cbd2ce}.accountRoom__ready{border:1px solid #52635d;background:#20302c;color:#c8d1cc}.accountRoom__ready.is-ready{border-color:#65c6a0;background:#174636;color:#bff4dc}
+    .accountRoom__headerActions{display:flex;align-items:center;gap:7px}.accountRoom__ledgerTrigger{min-height:44px;padding:9px 12px;border:1px solid #9b713b;border-radius:10px;background:#2e2419;color:#f0cc91;font-size:11px;font-weight:800;white-space:nowrap}
     .accountRoom__stats{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin:15px 0}.accountRoom__stats span{padding:9px 5px;text-align:center;background:#101a18;border-radius:9px;color:#929b96;font-size:10px}.accountRoom__stats b{display:block;color:#f2d7a7;font-size:15px}
-    .accountRoom__lobby,.accountRoom__room,.accountRoom__ledger{padding-top:15px;margin-top:15px;border-top:1px solid rgba(221,180,106,.17)}.accountRoom__create{display:grid;grid-template-columns:110px 1fr;gap:8px;margin-top:12px;align-items:end}.accountRoom__join{display:grid;grid-template-columns:1fr auto;gap:8px;margin-top:10px}.accountRoom__join label{grid-column:1/-1}.accountRoom__join input{margin:0;text-transform:uppercase;letter-spacing:.16em;font-weight:900}
+    .accountRoom__lobby,.accountRoom__room{padding-top:15px;margin-top:15px;border-top:1px solid rgba(221,180,106,.17)}.accountRoom__create{display:grid;grid-template-columns:110px 1fr;gap:8px;margin-top:12px;align-items:end}.accountRoom__join{display:grid;grid-template-columns:1fr auto;gap:8px;margin-top:10px}.accountRoom__join label{grid-column:1/-1}.accountRoom__join input{margin:0;text-transform:uppercase;letter-spacing:.16em;font-weight:900}
     .accountRoom__status{padding:6px 9px;border-radius:999px;background:#263631;color:#bfcac4;font-size:11px;font-weight:800}.accountRoom__status--playing{background:#553118;color:#ffc57e}
     .accountRoom__roster{list-style:none;padding:0;margin:12px 0;display:grid;grid-template-columns:repeat(2,1fr);gap:7px}.accountRoom__roster li{display:grid;grid-template-columns:25px 1fr;align-items:center;padding:9px;background:#101918;border:1px dashed #384641;border-radius:10px;color:#69726e}.accountRoom__roster li>span{grid-row:1/3;display:grid;place-items:center;width:20px;height:20px;border-radius:6px;background:#26312e;font-size:10px}.accountRoom__roster li b{font-size:12px}.accountRoom__roster li em{font-style:normal;font-size:9px;color:#7d8a85}.accountRoom__roster li.is-filled{border-style:solid;color:#eef1ed}.accountRoom__roster li.is-filled>span{background:#91642e;color:#fff}.accountRoom__actions{display:flex;flex-wrap:wrap;gap:7px}.accountRoom__actions button{flex:1}
-    .accountRoom__ledgerTitle>span{padding:5px 8px;background:#111b19;border-radius:8px;color:#d9b474;font-size:11px}.accountRoom__ledger ul{list-style:none;padding:0;margin:11px 0 0;display:grid;gap:7px}.accountRoom__ledger li{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px;background:#101918;border-radius:10px}.accountRoom__ledger li b{display:block;font-size:12px}.accountRoom__ledger li i{color:#e6a857;font-style:normal}.accountRoom__ledger li span{display:block;margin-top:3px;color:#8e9994;font-size:10px}.accountRoom__ledger li button{border:1px solid #bd8140;background:#3a281a;color:#ffd9a1;border-radius:8px;padding:7px 9px;font-size:10px;font-weight:800}.accountRoom__notice{margin:12px 0 0;padding:9px 11px;border-left:3px solid #d7a95e;background:#2a251c;color:#ead7b8;font-size:12px}
-    @media(max-width:520px){.accountRoom{padding:16px}.accountRoom__auth{grid-template-columns:1fr}.accountRoom__auth>*{grid-column:1}.accountRoom__stats{grid-template-columns:repeat(2,1fr)}.accountRoom__roster{grid-template-columns:1fr}}
+    .accountRoom__notice{margin:12px 0 0;padding:9px 11px;border-left:3px solid #d7a95e;background:#2a251c;color:#ead7b8;font-size:12px}
+    @media(max-width:520px){.accountRoom{padding:16px}.accountRoom__header{align-items:flex-start;flex-direction:column}.accountRoom__headerActions{width:100%}.accountRoom__headerActions button{flex:1;min-height:44px}.accountRoom__auth{grid-template-columns:1fr}.accountRoom__auth>*{grid-column:1}.accountRoom__stats{grid-template-columns:repeat(2,1fr)}.accountRoom__roster{grid-template-columns:1fr}}
   `}</style>;
 }
