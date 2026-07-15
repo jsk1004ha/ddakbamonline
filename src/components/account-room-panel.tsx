@@ -10,7 +10,11 @@ import HitLedgerDialog from "@/components/hit-ledger-dialog";
 import OnlineRoomGame from "@/components/online-room-game";
 
 import { accountIdEmail } from "@/lib/auth/account-id";
-import { normalizeDisplayName } from "@/lib/ledger/offline-entry.mjs";
+import {
+  normalizeDisplayName,
+  normalizeOfflineHits,
+  type OfflineDirection,
+} from "@/lib/ledger/offline-entry.mjs";
 import {
   canStartRoom,
   findFirstFreeSeat,
@@ -164,6 +168,49 @@ export default function AccountRoomPanel() {
     },
     [refreshLedger, refreshRoom, supabase],
   );
+
+  async function searchProfilesByName(query: string): Promise<Profile[]> {
+    const normalized = query.trim();
+    if (!normalized) return [];
+    if (!supabase || !user) return [];
+
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("*")
+      .ilike("display_name", `%${normalized}%`)
+      .neq("id", user.id)
+      .order("display_name")
+      .order("id")
+      .limit(8);
+    if (error) throw new Error(errorMessage(error));
+    return data ?? [];
+  }
+
+  async function addOfflineObligation(input: {
+    counterpartyId: string;
+    direction: OfflineDirection;
+    hits: string;
+  }): Promise<void> {
+    if (!supabase || !user) return;
+
+    setLedgerBusy(true);
+    setLedgerError("");
+    try {
+      const normalizedHits = normalizeOfflineHits(input.hits);
+      const { error } = await supabase.rpc("add_offline_hit_obligation", {
+        counterparty_id: input.counterpartyId,
+        direction: input.direction,
+        hits: normalizedHits,
+      });
+      if (error) throw error;
+      await refreshAccount(user.id);
+    } catch (error) {
+      setLedgerError(errorMessage(error));
+      throw error;
+    } finally {
+      setLedgerBusy(false);
+    }
+  }
 
   useEffect(() => {
     if (!supabase) return;
@@ -546,6 +593,8 @@ export default function AccountRoomPanel() {
           obligations={obligations}
           onClose={() => setLedgerOpen(false)}
           onRecordHit={recordHit}
+          onSearchProfiles={searchProfilesByName}
+          onAddOfflineObligation={addOfflineObligation}
         />
       )}
     </>

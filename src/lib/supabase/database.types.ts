@@ -263,37 +263,43 @@ export type Database = {
       hit_obligations: {
         Row: {
           id: string;
-          game_result_id: string;
+          game_result_id: string | null;
           room_id: string | null;
           debtor_id: string;
           creditor_id: string;
           initial_hits: string | number;
           remaining_hits: string | number;
           delivered_hits: number;
+          source: "game" | "offline";
+          created_by: string | null;
           created_at: string;
           updated_at: string;
         };
         Insert: {
           id?: string;
-          game_result_id: string;
+          game_result_id?: string | null;
           room_id?: string | null;
           debtor_id: string;
           creditor_id: string;
           initial_hits: string | number;
           remaining_hits: string | number;
           delivered_hits?: number;
+          source?: "game" | "offline";
+          created_by?: string | null;
           created_at?: string;
           updated_at?: string;
         };
         Update: {
           id?: string;
-          game_result_id?: string;
+          game_result_id?: string | null;
           room_id?: string | null;
           debtor_id?: string;
           creditor_id?: string;
           initial_hits?: string | number;
           remaining_hits?: string | number;
           delivered_hits?: number;
+          source?: "game" | "offline";
+          created_by?: string | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -326,11 +332,26 @@ export type Database = {
             referencedRelation: "profiles";
             referencedColumns: ["id"];
           },
+          {
+            foreignKeyName: "hit_obligations_created_by_fkey";
+            columns: ["created_by"];
+            isOneToOne: false;
+            referencedRelation: "profiles";
+            referencedColumns: ["id"];
+          },
         ];
       };
     };
     Views: Record<never, never>;
     Functions: {
+      add_offline_hit_obligation: {
+        Args: {
+          counterparty_id: string;
+          direction: string;
+          hits: string;
+        };
+        Returns: Database["public"]["Tables"]["hit_obligations"]["Row"];
+      };
       play_game_action: {
         Args: {
           action_name: string;

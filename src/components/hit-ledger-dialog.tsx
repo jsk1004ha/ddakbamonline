@@ -16,6 +16,12 @@ type HitLedgerDialogProps = {
   obligations: Obligation[];
   onClose: () => void;
   onRecordHit: (obligation: Obligation) => Promise<void>;
+  onSearchProfiles: (query: string) => Promise<Profile[]>;
+  onAddOfflineObligation: (input: {
+    counterpartyId: string;
+    direction: "i_hit" | "i_owe";
+    hits: string;
+  }) => Promise<void>;
 };
 
 function quantityToBigInt(value: string | number): bigint | null {
