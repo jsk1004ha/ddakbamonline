@@ -27,7 +27,7 @@ test("migration adds account identity and protected round storage", () => {
   assert.match(sql, /alter table public\.game_round_hands enable row level security/i);
   assert.match(sql, /alter table public\.game_actions enable row level security/i);
   assert.match(sql, /account_id.*\^\[a-z0-9_\]\{4,20\}\$/is);
-  assert.match(sql, /new\.email.*@accounts\\?\.ddakbam\\?\.invalid/is);
+  assert.match(sql, /requested_account_id := split_part\(lower\(new\.email\), '@', 1\)/i);
   assert.doesNotMatch(sql, /raw_user_meta_data\s*->>\s*['"]account_id['"]/i);
 });
 

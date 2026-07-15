@@ -43,7 +43,10 @@ test("rejects account IDs outside the supported format", () => {
 });
 
 test("creates the internal account email from a normalized ID", () => {
-  assert.equal(accountIdEmail(" Player_01 "), "player_01@accounts.ddakbam.invalid");
+  assert.equal(
+    accountIdEmail(" Player_01 "),
+    "player_01@accounts.ddakbamonline.com",
+  );
 });
 
 test("rejects invalid IDs when creating an account email", () => {

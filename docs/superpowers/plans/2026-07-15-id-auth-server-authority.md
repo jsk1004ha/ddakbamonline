@@ -63,7 +63,7 @@ test("accepts only four to twenty lowercase letters, numbers, and underscores", 
 });
 
 test("maps an account ID to the non-user-facing auth identifier", () => {
-  assert.equal(accountIdEmail(" Player_01 "), "player_01@accounts.ddakbam.invalid");
+  assert.equal(accountIdEmail(" Player_01 "), "player_01@accounts.ddakbamonline.com");
   assert.throws(() => accountIdEmail("bad-id"), /아이디/);
 });
 ```
@@ -78,7 +78,7 @@ Expected: FAIL because `src/lib/auth/account-id.ts` does not exist.
 
 ```ts
 export const ACCOUNT_ID_PATTERN = /^[a-z0-9_]{4,20}$/;
-export const ACCOUNT_ID_DOMAIN = "accounts.ddakbam.invalid";
+export const ACCOUNT_ID_DOMAIN = "accounts.ddakbamonline.com";
 
 export function normalizeAccountId(value: string): string {
   return value.trim().toLowerCase();
@@ -275,7 +275,7 @@ Use the exact path printed by the second command for all remaining steps.
 The migration must:
 
 - add unique `profiles.account_id` with `^[a-z0-9_]{4,20}$` constraint;
-- replace `handle_new_user()` so only `@accounts.ddakbam.invalid` identities create profiles and `account_id` derives from `auth.users.email` rather than metadata;
+- replace `handle_new_user()` so only `@accounts.ddakbamonline.com` identities create profiles and `account_id` derives from `auth.users.email` rather than metadata;
 - create `game_round_hands` with a two-card range/uniqueness check and RLS;
 - create append-only `game_actions` with RLS read access for room members;
 - grant explicit select-only access and add policy indexes.

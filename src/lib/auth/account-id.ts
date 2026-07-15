@@ -1,5 +1,5 @@
 export const ACCOUNT_ID_PATTERN = /^[a-z0-9_]{4,20}$/;
-export const ACCOUNT_ID_DOMAIN = "accounts.ddakbam.invalid";
+export const ACCOUNT_ID_DOMAIN = "accounts.ddakbamonline.com";
 
 export function normalizeAccountId(accountId: string): string {
   return accountId.trim().toLowerCase();
