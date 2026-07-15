@@ -80,7 +80,7 @@ test("offers explicit direction and name-driven account selection", () => {
   );
   assert.match(source, /placeholder="이름으로 계정 찾기"/);
   assert.match(source, /<b>\{profile\.display_name\}<\/b>/);
-  assert.match(source, /@\{profile\.account_id\}/);
+  assert.doesNotMatch(source, /@\{profile\.account_id\}/);
   assert.match(
     source,
     /aria-pressed=\{entryState\.selectedProfile\?\.id === profile\.id\}/,
@@ -89,6 +89,23 @@ test("offers explicit direction and name-driven account selection", () => {
     source,
     /profile\.(?:email|avatar_url|created_at|updated_at|games_played|games_won)/,
   );
+});
+
+test("renders a searchable global ledger with names only", () => {
+  assert.match(
+    source,
+    /<h2 id="ledger-dialog-title">전체 딱밤 장부<\/h2>/,
+  );
+  assert.match(source, /id="global-ledger-query"/);
+  assert.match(source, /placeholder="때릴 사람 또는 맞을 사람 이름"/);
+  assert.match(
+    source,
+    /filterObligationsByName\(\s*obligations,\s*names,\s*ledgerQuery,?\s*\)/,
+  );
+  assert.match(source, /visibleObligations\.length/);
+  assert.match(source, /obligations\.length/);
+  assert.match(source, /검색한 이름과 일치하는 장부가 없어요/);
+  assert.match(source, /setLedgerQuery\(""\)/);
 });
 
 test("uses the behavioral state helper that owns selection and stale results", () => {
@@ -208,7 +225,7 @@ test("contains long ledger values and preserves the mobile width contract", () =
   );
   assert.match(
     styleSource,
-    /\.ledger-dialog__matches b,[\s\S]*\.ledger-dialog__matches span\s*\{[^}]*min-width: 0;[^}]*overflow-wrap: anywhere;[^}]*\}/,
+    /\.ledger-dialog__matches b\s*\{[^}]*min-width: 0;[^}]*overflow-wrap: anywhere;[^}]*\}/,
   );
   assert.match(
     styleSource,

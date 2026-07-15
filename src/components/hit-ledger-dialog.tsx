@@ -11,6 +11,7 @@ import {
 import AppDialog from "@/components/app-dialog";
 import {
   createOfflineEntryUiState,
+  filterObligationsByName,
   ledgerErrorMessage,
   normalizeDisplayName,
   normalizeOfflineHits,
@@ -94,6 +95,7 @@ export default function HitLedgerDialog({
   );
   const [searchBusy, setSearchBusy] = useState(false);
   const [submitBusy, setSubmitBusy] = useState(false);
+  const [ledgerQuery, setLedgerQuery] = useState("");
 
   const normalizedHits = normalizedHitsOrNull(entryState.hits);
   const submitDisabled =
@@ -104,6 +106,11 @@ export default function HitLedgerDialog({
     normalizedHits === null;
   const controlsBusy = busy || searchBusy || submitBusy;
   const visibleError = entryState.localError || error;
+  const visibleObligations = filterObligationsByName(
+    obligations,
+    names,
+    ledgerQuery,
+  );
   const remainingToDeliver = sumRemaining(
     obligations.filter((item) => item.creditor_id === userId),
   );
@@ -141,6 +148,7 @@ export default function HitLedgerDialog({
     });
     setSearchBusy(false);
     setSubmitBusy(false);
+    setLedgerQuery("");
     onClose();
   }
 
@@ -251,7 +259,7 @@ export default function HitLedgerDialog({
         <header className="ledger-dialog__header">
           <div>
             <small>NO NETTING</small>
-            <h2 id="ledger-dialog-title">내 딱밤 장부</h2>
+            <h2 id="ledger-dialog-title">전체 딱밤 장부</h2>
           </div>
           <button
             type="button"
@@ -368,7 +376,6 @@ export default function HitLedgerDialog({
                       }
                     >
                       <b>{profile.display_name}</b>
-                      <span>@{profile.account_id}</span>
                     </button>
                   </li>
                 ))}
@@ -435,16 +442,34 @@ export default function HitLedgerDialog({
                 <small>OPEN OBLIGATIONS</small>
                 <h3 id="ledger-list-title">남은 딱밤</h3>
               </div>
-              <span>{obligations.length}건</span>
+              <span>
+                {visibleObligations.length} / {obligations.length}건
+              </span>
+            </div>
+
+            <div className="ledger-dialog__ledgerSearch">
+              <label htmlFor="global-ledger-query">전체 장부 이름 검색</label>
+              <input
+                id="global-ledger-query"
+                type="search"
+                value={ledgerQuery}
+                placeholder="때릴 사람 또는 맞을 사람 이름"
+                autoComplete="off"
+                onChange={(event) => setLedgerQuery(event.target.value)}
+              />
             </div>
 
             {obligations.length === 0 ? (
               <p className="ledger-dialog__empty">
-                아직 계정에 남은 딱밤 약속이 없어요.
+                아직 전체 장부에 남은 딱밤 약속이 없어요.
+              </p>
+            ) : visibleObligations.length === 0 ? (
+              <p className="ledger-dialog__empty">
+                검색한 이름과 일치하는 장부가 없어요.
               </p>
             ) : (
               <ul className="ledger-dialog__list">
-                {obligations.map((item) => {
+                {visibleObligations.map((item) => {
                   const remaining = quantityToBigInt(item.remaining_hits);
                   const canRecord =
                     item.creditor_id === userId &&
@@ -713,19 +738,11 @@ export default function HitLedgerDialog({
           border-color: #d29a52;
           box-shadow: inset 3px 0 #e7ad60;
         }
-        .ledger-dialog__matches b,
-        .ledger-dialog__matches span {
+        .ledger-dialog__matches b {
           display: block;
           min-width: 0;
           overflow-wrap: anywhere;
-        }
-        .ledger-dialog__matches b {
           font-size: 12px;
-        }
-        .ledger-dialog__matches span {
-          margin-top: 3px;
-          color: #8e9a94;
-          font-size: 10px;
         }
         .ledger-dialog__searchStatus {
           position: absolute;
@@ -754,6 +771,31 @@ export default function HitLedgerDialog({
         }
         .ledger-dialog__add button {
           margin-top: 9px;
+        }
+        .ledger-dialog__ledgerSearch {
+          display: grid;
+          gap: 6px;
+          margin-top: 14px;
+        }
+        .ledger-dialog__ledgerSearch label {
+          color: #b8c0bb;
+          font-size: 11px;
+          font-weight: 750;
+        }
+        .ledger-dialog__ledgerSearch input {
+          min-height: 44px;
+          min-width: 0;
+          width: 100%;
+          padding: 10px 11px;
+          color: #f8eedb;
+          background: #091512;
+          border: 1px solid #34443f;
+          border-radius: 10px;
+          outline: none;
+        }
+        .ledger-dialog__ledgerSearch input:focus-visible {
+          border-color: #d7a95e;
+          box-shadow: 0 0 0 3px rgba(215, 169, 94, 0.14);
         }
         .ledger-dialog__empty {
           margin: 14px 0 0;
