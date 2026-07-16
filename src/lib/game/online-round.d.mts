@@ -34,6 +34,8 @@ interface PublicRoundBase {
   roundToken: string;
   roundNumber: number;
   playerIds: string[];
+  foldedPlayerIds: string[];
+  foldedStakes: Record<string, PublicExactQuantity>;
 }
 
 export interface PublicBettingRoundState extends PublicRoundBase {

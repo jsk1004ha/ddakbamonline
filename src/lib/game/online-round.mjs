@@ -5,6 +5,8 @@ const ROUND_KEYS = [
   "roundToken",
   "roundNumber",
   "playerIds",
+  "foldedPlayerIds",
+  "foldedStakes",
   "betting",
   "phase",
   "evaluations",
@@ -26,6 +28,15 @@ const UUID_PATTERN =
 
 function isRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isPlainRecord(value) {
+  if (!isRecord(value)) {
+    return false;
+  }
+
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
 }
 
 function hasExactKeys(value, expectedKeys) {
@@ -61,6 +72,21 @@ function samePlayerOrder(left, right) {
   );
 }
 
+function isOrderedPlayerSubset(value, playerIds) {
+  if (
+    !isPlayerList(value, 0, playerIds.length - 1) ||
+    value.some((playerId) => !playerIds.includes(playerId))
+  ) {
+    return false;
+  }
+
+  const selectedPlayers = new Set(value);
+  return samePlayerOrder(
+    value,
+    playerIds.filter((playerId) => selectedPlayers.has(playerId)),
+  );
+}
+
 function parseExactQuantity(value, allowZero) {
   let quantity;
 
@@ -84,7 +110,7 @@ function parseExactQuantity(value, allowZero) {
   return quantity;
 }
 
-function readBetting(value, playerIds) {
+function readBetting(value, playerIds, foldedPlayerIds, foldedStakes) {
   if (!hasExactKeys(value, BETTING_KEYS)) {
     return null;
   }
@@ -124,12 +150,40 @@ function readBetting(value, playerIds) {
     return null;
   }
 
+  if (!isPlainRecord(foldedStakes)) {
+    return null;
+  }
+  const foldedStakeKeys = Object.keys(foldedStakes);
+  if (
+    foldedStakeKeys.length !== foldedPlayerIds.length ||
+    foldedStakeKeys.some((playerId) => !foldedPlayerIds.includes(playerId))
+  ) {
+    return null;
+  }
+  for (const playerId of foldedPlayerIds) {
+    const foldedStake = parseExactQuantity(foldedStakes[playerId], false);
+    if (
+      foldedStake === null ||
+      foldedStake > currentStake ||
+      foldedStake !== commitments.get(playerId)
+    ) {
+      return null;
+    }
+  }
+
+  const foldedPlayers = new Set(foldedPlayerIds);
+  const activePlayerIds = playerIds.filter(
+    (playerId) => !foldedPlayers.has(playerId),
+  );
+
   if (
     !isPlayerList(value.pendingPlayerIds) ||
-    value.pendingPlayerIds.some((playerId) => !playerIds.includes(playerId)) ||
+    value.pendingPlayerIds.some(
+      (playerId) => !activePlayerIds.includes(playerId),
+    ) ||
     !(
       value.lastAggressorId === null ||
-      playerIds.includes(value.lastAggressorId)
+      activePlayerIds.includes(value.lastAggressorId)
     )
   ) {
     return null;
@@ -143,7 +197,7 @@ function readBetting(value, playerIds) {
     ) {
       return null;
     }
-    for (const playerId of playerIds) {
+    for (const playerId of activePlayerIds) {
       const commitment = commitments.get(playerId);
       if (pendingPlayers.has(playerId) !== (commitment < currentStake)) {
         return null;
@@ -153,7 +207,10 @@ function readBetting(value, playerIds) {
     if (
       value.turnPlayerId !== null ||
       value.pendingPlayerIds.length !== 0 ||
-      playerIds.some((playerId) => commitments.get(playerId) !== currentStake)
+      (activePlayerIds.length > 1 &&
+        activePlayerIds.some(
+          (playerId) => commitments.get(playerId) !== currentStake,
+        ))
     ) {
       return null;
     }
@@ -195,14 +252,14 @@ function readEvaluation(value) {
   return value;
 }
 
-function readShowdown(evaluations, winnerIds, playerIds) {
+function readShowdown(evaluations, winnerIds, playerIds, activePlayerIds) {
   if (!isRecord(evaluations) || !isPlayerList(winnerIds, 1)) {
     return false;
   }
   if (
     Object.keys(evaluations).length !== playerIds.length ||
     Object.keys(evaluations).some((playerId) => !playerIds.includes(playerId)) ||
-    winnerIds.some((playerId) => !playerIds.includes(playerId))
+    winnerIds.some((playerId) => !activePlayerIds.includes(playerId))
   ) {
     return false;
   }
@@ -216,7 +273,7 @@ function readShowdown(evaluations, winnerIds, playerIds) {
     parsedEvaluations.set(playerId, evaluation);
   }
 
-  const strongest = playerIds.reduce((best, playerId) => {
+  const strongest = activePlayerIds.reduce((best, playerId) => {
     const candidate = parsedEvaluations.get(playerId);
     if (
       best === null ||
@@ -227,7 +284,7 @@ function readShowdown(evaluations, winnerIds, playerIds) {
     }
     return best;
   }, null);
-  const expectedWinnerIds = playerIds.filter((playerId) => {
+  const expectedWinnerIds = activePlayerIds.filter((playerId) => {
     const candidate = parsedEvaluations.get(playerId);
     return (
       candidate.rank === strongest.rank &&
@@ -250,15 +307,26 @@ export function readPublicOnlineRound(value) {
     !UUID_PATTERN.test(value.roundToken) ||
     !Number.isSafeInteger(value.roundNumber) ||
     value.roundNumber < 1 ||
-    !isPlayerList(value.playerIds, MIN_PLAYERS)
+    !isPlayerList(value.playerIds, MIN_PLAYERS) ||
+    !isOrderedPlayerSubset(value.foldedPlayerIds, value.playerIds)
   ) {
     return null;
   }
 
-  const betting = readBetting(value.betting, value.playerIds);
+  const betting = readBetting(
+    value.betting,
+    value.playerIds,
+    value.foldedPlayerIds,
+    value.foldedStakes,
+  );
   if (betting === null || !isRecord(value.evaluations) || !Array.isArray(value.winnerIds)) {
     return null;
   }
+
+  const foldedPlayers = new Set(value.foldedPlayerIds);
+  const activePlayerIds = value.playerIds.filter(
+    (playerId) => !foldedPlayers.has(playerId),
+  );
 
   if (value.phase === "betting") {
     return betting.status === "betting" &&
@@ -270,7 +338,12 @@ export function readPublicOnlineRound(value) {
 
   if (value.phase === "showdown") {
     return betting.status === "complete" &&
-      readShowdown(value.evaluations, value.winnerIds, value.playerIds)
+      readShowdown(
+        value.evaluations,
+        value.winnerIds,
+        value.playerIds,
+        activePlayerIds,
+      )
       ? value
       : null;
   }
