@@ -285,6 +285,17 @@ function validateBettingState(state) {
   if (state.status !== "betting" && state.status !== "complete") {
     throw new RangeError("state has an invalid status");
   }
+  const invalidState = (message, complete = false) => {
+    throw new RangeError(
+      `invalid ${complete ? "complete " : ""}betting state: ${message}`,
+    );
+  };
+  if (
+    !Object.hasOwn(state, "foldedPlayerIds") ||
+    !Object.hasOwn(state, "foldedStakes")
+  ) {
+    invalidState("foldedPlayerIds and foldedStakes must be own properties");
+  }
   if (
     state.commitments === null ||
     typeof state.commitments !== "object" ||
@@ -308,11 +319,6 @@ function validateBettingState(state) {
     throw new TypeError("state folded stakes are invalid");
   }
 
-  const invalidState = (message, complete = false) => {
-    throw new RangeError(
-      `invalid ${complete ? "complete " : ""}betting state: ${message}`,
-    );
-  };
   const canonicalQuantity = (value, label, allowZero = false) => {
     let parsed;
     try {

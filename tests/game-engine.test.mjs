@@ -215,6 +215,8 @@ test("a call upgrades a legacy active state without mutating its shape", () => {
   assert.equal(Object.hasOwn(legacyState, "foldedPlayerIds"), false);
   assert.equal(Object.hasOwn(legacyState, "foldedStakes"), false);
   assert.deepEqual(legacyState.commitments, { a: 0, b: 0 });
+  assert.equal(Object.hasOwn(afterCall, "foldedPlayerIds"), true);
+  assert.equal(Object.hasOwn(afterCall, "foldedStakes"), true);
   assert.deepEqual(afterCall.foldedPlayerIds, []);
   assert.deepEqual(afterCall.foldedStakes, {});
   assert.deepEqual(afterCall.commitments, { a: 1, b: 0 });
@@ -234,6 +236,8 @@ test("a raise upgrades a legacy active state while preserving exact quantities",
 
   assert.equal(Object.hasOwn(legacyState, "foldedPlayerIds"), false);
   assert.equal(Object.hasOwn(legacyState, "foldedStakes"), false);
+  assert.equal(Object.hasOwn(afterRaise, "foldedPlayerIds"), true);
+  assert.equal(Object.hasOwn(afterRaise, "foldedStakes"), true);
   assert.deepEqual(afterRaise.foldedPlayerIds, []);
   assert.deepEqual(afterRaise.foldedStakes, {});
   assert.equal(afterRaise.currentStake, hugeStake);
@@ -532,6 +536,33 @@ test("applyAction rejects malformed rehydrated folded players and stakes", () =>
       /(?:invalid (?:complete )?betting state|state folded)/,
     );
   }
+});
+
+test("applyAction rejects inherited fold fields in partially migrated states", () => {
+  const canonical = createBettingState(["a", "b"]);
+  const inheritedPlayerIds = Object.assign(
+    Object.create({ foldedPlayerIds: [] }),
+    canonical,
+  );
+  delete inheritedPlayerIds.foldedPlayerIds;
+  const inheritedStakes = Object.assign(
+    Object.create({ foldedStakes: {} }),
+    canonical,
+  );
+  delete inheritedStakes.foldedStakes;
+
+  assert.equal(Object.hasOwn(inheritedPlayerIds, "foldedPlayerIds"), false);
+  assert.equal(Object.hasOwn(inheritedPlayerIds, "foldedStakes"), true);
+  assert.equal(Object.hasOwn(inheritedStakes, "foldedPlayerIds"), true);
+  assert.equal(Object.hasOwn(inheritedStakes, "foldedStakes"), false);
+  assert.throws(
+    () => applyAction(inheritedPlayerIds, "a", { type: "call" }),
+    /invalid betting state/,
+  );
+  assert.throws(
+    () => applyAction(inheritedStakes, "a", { type: "call" }),
+    /invalid betting state/,
+  );
 });
 
 test("applyAction rejects folded pending players and a folded last aggressor", () => {
