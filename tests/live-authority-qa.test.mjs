@@ -61,6 +61,29 @@ test("four-player live QA covers presence, legal folds, showdown, and exact debt
     script,
     /assert\.equal\(BigInt\(debt\.initial_hits\),\s*BigInt\(expected\)\)/,
   );
+  assert.match(
+    script,
+    /const secondFoldStake = room\.state\.foldedStakes\[secondFoldTurn\]/,
+  );
+  assert.match(
+    script,
+    /assert\.equal\(BigInt\(secondFoldStake\),\s*BigInt\(secondRaise\)\)/,
+  );
+  assert.match(
+    script,
+    /while \(room\.state\.winnerIds\.length !== 1[\s\S]*?playTwoFoldRound/,
+    "ties must retry the same two-fold scenario",
+  );
+  assert.match(
+    script,
+    /assert\.equal\(room\.state\.winnerIds\.length,\s*1[\s\S]*?const \{ data: debtRows/,
+    "exact debt assertions require a proven sole winner",
+  );
+  assert.doesNotMatch(
+    script,
+    /if \(room\.state\.winnerIds\.length === 1\)/,
+    "a tie must not skip exact folded-debt proof",
+  );
   assert.doesNotMatch(script, /Number\([^\n]*(?:currentStake|initial_hits|foldedStakes)/);
 });
 
@@ -75,6 +98,11 @@ test("live QA rejects an offline next round and restores it after presence", () 
   assert.match(
     script,
     /guestThree\.rpc\([\s\S]*?touch_room_presence[\s\S]*?host\.rpc\([\s\S]*?start_game_round/,
+  );
+  assert.match(
+    script,
+    /await touchParticipants\(roomId, fourPlayers\);\s*const staleLastSeenAt/,
+    "all four participants must be fresh immediately before one is backdated",
   );
 });
 
@@ -92,17 +120,39 @@ test("authenticated observer cannot mutate another room lifecycle", () => {
     );
   }
   assert.match(script, /assertRoomUnchanged\([\s\S]*?observer lifecycle/);
+  const observerLeaves = [
+    ...script.matchAll(/observer\.rpc\(\s*"leave_game_room"/g),
+  ];
+  assert.equal(observerLeaves.length, 2, "observer leave must be idempotent twice");
+  assert.match(script, /const observerLeaveVersion = room\.version/);
+  assert.match(
+    script,
+    /const firstObserverLeave =[\s\S]*?expected_version:\s*observerLeaveVersion[\s\S]*?const secondObserverLeave =[\s\S]*?expected_version:\s*observerLeaveVersion/,
+  );
+  assert.match(script, /assert\.equal\(firstObserverLeave\.data\.left,\s*true\)/);
+  assert.match(script, /assert\.equal\(secondObserverLeave\.data\.left,\s*true\)/);
   assert.match(script, /observerLifecycleDenied:\s*true/);
 });
 
 test("separate active rooms prove leave closure and concurrent idle expiry", () => {
   assert.match(script, /const leaveRoom = await createActiveRoom\(/);
+  assert.match(script, /let leaveSettlementRoom = await playRoundToShowdown\(leaveRoom\.id\)/);
+  assert.match(script, /const leaveResultIds =/);
+  assert.match(script, /const leaveObligationIds =/);
   assert.match(
     script,
     /guest\.rpc\(\s*"leave_game_room",\s*\{[\s\S]*?target_room:\s*leaveRoom\.id/,
   );
   assert.match(script, /assert\.equal\(closedLeaveRoom\.status,\s*"closed"\)/);
   assert.match(script, /assert\.equal\(leaveMemberCount,\s*0\)/);
+  assert.match(
+    script,
+    /\.from\("game_results"\)[\s\S]*?\.in\("id",\s*leaveResultIds\)[\s\S]*?assert\.deepEqual\(preservedResultIds,\s*leaveResultIds\)/,
+  );
+  assert.match(
+    script,
+    /\.from\("hit_obligations"\)[\s\S]*?\.in\("id",\s*leaveObligationIds\)[\s\S]*?assert\.deepEqual\(preservedObligationIds,\s*leaveObligationIds\)/,
+  );
   assert.match(script, /const idleRoom = await createActiveRoom\(/);
   assert.match(script, /\.update\(\{\s*updated_at:/);
   assert.match(
@@ -113,6 +163,7 @@ test("separate active rooms prove leave closure and concurrent idle expiry", () 
   assert.match(script, /assert\.equal\(guestExpiry\.data\.expired,\s*true\)/);
   assert.match(script, /assert\.equal\(closedIdleRoom\.status,\s*"closed"\)/);
   assert.match(script, /assert\.equal\(idleMemberCount,\s*0\)/);
+  assert.doesNotMatch(script, /serverIdleCleanupObserved/);
 });
 
 test("cleanup tracks every generated entity, preserves dependency order, and proves zero residue", () => {
@@ -140,6 +191,11 @@ test("cleanup tracks every generated entity, preserves dependency order, and pro
   assert.match(script, /async function assertNoQaResidue\(\)/);
   assert.match(script, /\.from\("profiles"\)[\s\S]*?\.in\("id",\s*createdUserIds\)/);
   assert.match(script, /auth\.admin\.getUserById/);
+  assert.match(script, /assert\.equal\(lookup\.error\.name,\s*"AuthApiError"\)/);
+  assert.match(script, /assert\.equal\(lookup\.error\.status,\s*404\)/);
+  assert.match(script, /assert\.equal\(lookup\.error\.code,\s*"user_not_found"\)/);
+  assert.match(script, /assert\.equal\(lookup\.data\.user,\s*null\)/);
+  assert.doesNotMatch(script, /lookup\.error \|\| !lookup\.data\.user/);
   assert.match(script, /\.from\("game_rooms"\)[\s\S]*?\.in\("id",\s*createdRoomIds\)/);
   assert.match(script, /\.from\("game_results"\)[\s\S]*?\.in\("id",\s*resultIds\)/);
   assert.match(script, /\.from\("hit_obligations"\)[\s\S]*?\.in\("id",\s*obligationIds\)/);

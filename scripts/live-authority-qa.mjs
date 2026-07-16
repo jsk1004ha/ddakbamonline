@@ -131,10 +131,11 @@ async function assertNoQaResidue() {
       createdUserIds.map((userId) => admin.auth.admin.getUserById(userId)),
     );
     for (const lookup of authLookups) {
-      assert.ok(
-        lookup.error || !lookup.data.user,
-        "a disposable auth user remains",
-      );
+      assert.equal(lookup.data.user, null);
+      assert.ok(lookup.error, "deleted auth user lookup should fail");
+      assert.equal(lookup.error.name, "AuthApiError");
+      assert.equal(lookup.error.status, 404);
+      assert.equal(lookup.error.code, "user_not_found");
     }
   }
 
@@ -458,6 +459,57 @@ async function playRoundToShowdown(roomId) {
   }
   assert.equal(room.state.phase, "showdown");
   assertPublicState(room.state);
+  return room;
+}
+
+async function playTwoFoldRound(roomId, room, afterFirstRaise = null) {
+  const firstRaise = (
+    BigInt(room.state.betting.currentStake) + 2n
+  ).toString();
+  room = await playCurrentTurn(roomId, room, "raise", firstRaise);
+  if (afterFirstRaise) {
+    await afterFirstRaise();
+  }
+
+  const firstFoldTurn = room.state.betting.turnPlayerId;
+  const firstFold = await actorClient(firstFoldTurn).rpc("play_game_action", {
+    target_room: roomId,
+    expected_version: room.version,
+    action_name: "fold",
+    raise_to: null,
+  });
+  assert.ifError(firstFold.error);
+  room = await readRoom(roomId);
+  const firstFoldStake = room.state.foldedStakes[firstFoldTurn];
+  assert.equal(BigInt(firstFoldStake), BigInt(firstRaise));
+
+  const secondRaise = (
+    BigInt(room.state.betting.currentStake) + 3n
+  ).toString();
+  room = await playCurrentTurn(roomId, room, "raise", secondRaise);
+  const secondFoldTurn = room.state.betting.turnPlayerId;
+  const secondFold = await actorClient(secondFoldTurn).rpc("play_game_action", {
+    target_room: roomId,
+    expected_version: room.version,
+    action_name: "fold",
+    raise_to: null,
+  });
+  assert.ifError(secondFold.error);
+  room = await readRoom(roomId);
+  const secondFoldStake = room.state.foldedStakes[secondFoldTurn];
+  assert.equal(BigInt(secondFoldStake), BigInt(secondRaise));
+
+  room = await playRoundToShowdown(roomId);
+  assert.equal(room.state.foldedPlayerIds.length, 2);
+  assert.equal(room.state.phase, "showdown");
+  assert.ok(
+    !room.state.winnerIds.some((id) => room.state.foldedPlayerIds.includes(id)),
+  );
+  assert.equal(
+    new Set(Object.values(room.state.foldedStakes).map(String)).size,
+    2,
+    "folded stakes should freeze at different current stakes",
+  );
   return room;
 }
 
@@ -798,53 +850,17 @@ expectError(
   "non-increasing raise",
 );
 
-const firstRaise = (BigInt(initialStake) + 2n).toString();
-room = await playCurrentTurn(roomId, room, "raise", firstRaise);
-expectError(
-  await actorClient(turnId).rpc("play_game_action", {
-    target_room: roomId,
-    expected_version: initialVersion,
-    action_name: "call",
-    raise_to: null,
-  }),
-  "stale action replay",
-);
-
-const firstFoldTurn = room.state.betting.turnPlayerId;
-const firstFold = await actorClient(firstFoldTurn).rpc("play_game_action", {
-  target_room: roomId,
-  expected_version: room.version,
-  action_name: "fold",
-  raise_to: null,
+room = await playTwoFoldRound(roomId, room, async () => {
+  expectError(
+    await actorClient(turnId).rpc("play_game_action", {
+      target_room: roomId,
+      expected_version: initialVersion,
+      action_name: "call",
+      raise_to: null,
+    }),
+    "stale action replay",
+  );
 });
-assert.ifError(firstFold.error);
-room = await readRoom(roomId);
-const firstFoldStake = room.state.foldedStakes[firstFoldTurn];
-assert.equal(BigInt(firstFoldStake), BigInt(firstRaise));
-
-const secondRaise = (
-  BigInt(room.state.betting.currentStake) + 3n
-).toString();
-room = await playCurrentTurn(roomId, room, "raise", secondRaise);
-const secondFoldTurn = room.state.betting.turnPlayerId;
-const secondFold = await actorClient(secondFoldTurn).rpc("play_game_action", {
-  target_room: roomId,
-  expected_version: room.version,
-  action_name: "fold",
-  raise_to: null,
-});
-assert.ifError(secondFold.error);
-room = await playRoundToShowdown(roomId);
-assert.equal(room.state.foldedPlayerIds.length, 2);
-assert.equal(room.state.phase, "showdown");
-assert.ok(
-  !room.state.winnerIds.some((id) => room.state.foldedPlayerIds.includes(id)),
-);
-assert.equal(
-  new Set(Object.values(room.state.foldedStakes).map(String)).size,
-  2,
-  "folded stakes should freeze at different current stakes",
-);
 
 const hostHandsAfter = await host
   .from("game_round_hands")
@@ -856,19 +872,34 @@ assert.equal(hostHandsAfter.data.length, 4);
 
 let resultRows = await readRoundResults(room.state.roundToken);
 assert.equal(resultRows.length, 1);
-if (room.state.winnerIds.length === 1) {
-  const { data: debtRows, error: debtError } = await admin
-    .from("hit_obligations")
-    .select("id, debtor_id, creditor_id, initial_hits")
-    .eq("game_result_id", resultRows[0].id);
-  assert.ifError(debtError);
-  const debts = trackObligationRows(debtRows);
-  assert.equal(debts.length, 3);
-  for (const debt of debts) {
-    const frozen = room.state.foldedStakes[debt.debtor_id];
-    const expected = frozen ?? room.state.betting.currentStake;
-    assert.equal(BigInt(debt.initial_hits), BigInt(expected));
-  }
+let foldedRoundAttempts = 1;
+while (room.state.winnerIds.length !== 1 && foldedRoundAttempts < 12) {
+  foldedRoundAttempts += 1;
+  await touchParticipants(roomId, fourPlayers);
+  const { error: nextFoldedRoundError } = await host.rpc(
+    "start_game_round",
+    {
+      target_room: roomId,
+      expected_version: room.version,
+    },
+  );
+  assert.ifError(nextFoldedRoundError);
+  room = await playTwoFoldRound(roomId, await readRoom(roomId));
+  resultRows = await readRoundResults(room.state.roundToken);
+  assert.equal(resultRows.length, 1);
+}
+assert.equal(room.state.winnerIds.length, 1);
+const { data: debtRows, error: debtError } = await admin
+  .from("hit_obligations")
+  .select("id, debtor_id, creditor_id, initial_hits")
+  .eq("game_result_id", resultRows[0].id);
+assert.ifError(debtError);
+const debts = trackObligationRows(debtRows);
+assert.equal(debts.length, 3);
+for (const debt of debts) {
+  const frozen = room.state.foldedStakes[debt.debtor_id];
+  const expected = frozen ?? room.state.betting.currentStake;
+  assert.equal(BigInt(debt.initial_hits), BigInt(expected));
 }
 
 const observerRoomBefore = room;
@@ -883,18 +914,26 @@ expectError(
   }),
   "observer room close",
 );
-const observerLeave = await observer.rpc("leave_game_room", {
+const observerLeaveVersion = room.version;
+const firstObserverLeave = await observer.rpc("leave_game_room", {
   target_room: roomId,
-  expected_version: room.version,
+  expected_version: observerLeaveVersion,
 });
-assert.ifError(observerLeave.error);
-assert.equal(observerLeave.data.left, true);
+assert.ifError(firstObserverLeave.error);
+assert.equal(firstObserverLeave.data.left, true);
+const secondObserverLeave = await observer.rpc("leave_game_room", {
+  target_room: roomId,
+  expected_version: observerLeaveVersion,
+});
+assert.ifError(secondObserverLeave.error);
+assert.equal(secondObserverLeave.data.left, true);
 expectError(
   await observer.rpc("expire_idle_game_room", { target_room: roomId }),
   "observer room expiry",
 );
 await assertRoomUnchanged(roomId, observerRoomBefore, "observer lifecycle");
 
+await touchParticipants(roomId, fourPlayers);
 const staleLastSeenAt = new Date(Date.now() - 61_000).toISOString();
 const { data: stalePresenceRows, error: stalePresenceError } = await admin
   .from("room_members")
@@ -1021,9 +1060,42 @@ assert.equal(
 );
 
 const leaveRoom = await createActiveRoom(twoPlayers);
+let leaveSettlementRoom = await playRoundToShowdown(leaveRoom.id);
+let leaveSettlementResults = await readRoundResults(
+  leaveSettlementRoom.state.roundToken,
+);
+let leaveSettlementAttempts = 1;
+while (
+  leaveSettlementRoom.state.winnerIds.length !== 1 &&
+  leaveSettlementAttempts < 12
+) {
+  leaveSettlementAttempts += 1;
+  await touchParticipants(leaveRoom.id, twoPlayers);
+  const { error: nextLeaveRoundError } = await host.rpc("start_game_round", {
+    target_room: leaveRoom.id,
+    expected_version: leaveSettlementRoom.version,
+  });
+  assert.ifError(nextLeaveRoundError);
+  leaveSettlementRoom = await playRoundToShowdown(leaveRoom.id);
+  leaveSettlementResults = await readRoundResults(
+    leaveSettlementRoom.state.roundToken,
+  );
+}
+assert.equal(leaveSettlementRoom.state.winnerIds.length, 1);
+assert.equal(leaveSettlementResults.length, 1);
+const leaveResultIds = leaveSettlementResults.map(({ id }) => id).sort();
+const { data: leaveObligations, error: leaveObligationsError } = await admin
+  .from("hit_obligations")
+  .select("id")
+  .eq("game_result_id", leaveResultIds[0]);
+assert.ifError(leaveObligationsError);
+const leaveObligationIds = trackObligationRows(leaveObligations)
+  .map(({ id }) => id)
+  .sort();
+assert.equal(leaveObligationIds.length, 1);
 const leaveResult = await guest.rpc("leave_game_room", {
   target_room: leaveRoom.id,
-  expected_version: leaveRoom.version,
+  expected_version: leaveSettlementRoom.version,
 });
 assert.ifError(leaveResult.error);
 assert.equal(leaveResult.data.left, true);
@@ -1031,6 +1103,23 @@ const closedLeaveRoom = await readRoomAsAdmin(leaveRoom.id);
 const leaveMemberCount = await readMemberCount(leaveRoom.id);
 assert.equal(closedLeaveRoom.status, "closed");
 assert.equal(leaveMemberCount, 0);
+const { data: preservedResults, error: preservedResultsError } = await admin
+  .from("game_results")
+  .select("id")
+  .in("id", leaveResultIds);
+assert.ifError(preservedResultsError);
+const preservedResultIds = preservedResults.map(({ id }) => id).sort();
+assert.deepEqual(preservedResultIds, leaveResultIds);
+const { data: preservedObligations, error: preservedObligationsError } =
+  await admin
+    .from("hit_obligations")
+    .select("id")
+    .in("id", leaveObligationIds);
+assert.ifError(preservedObligationsError);
+const preservedObligationIds = preservedObligations
+  .map(({ id }) => id)
+  .sort();
+assert.deepEqual(preservedObligationIds, leaveObligationIds);
 
 const idleRoom = await createActiveRoom(twoPlayers);
 const idleBackdate = new Date(Date.now() - 121_000).toISOString();
@@ -1081,7 +1170,6 @@ console.log(
     observerLifecycleDenied: true,
     activeLeaveClosedRoom: true,
     concurrentIdleExpiryVerified: true,
-    serverIdleCleanupObserved: true,
   }),
 );
 } catch (error) {
