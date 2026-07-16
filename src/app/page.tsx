@@ -5,11 +5,11 @@ export default function Home() {
     <main className="online-shell">
       <header className="online-shell__header">
         <div className="online-shell__identity">
-          <a className="brand" href="#top" aria-label="딱밤소사이어티 홈">
+          <a className="brand" href="#top" aria-label="딱밤온라인 홈">
             <span className="brand-seal" aria-hidden="true">딱</span>
             <span>
-              <strong>딱밤소사이어티</strong>
-              <small>DDAKBAM SOCIETY · SEOUL</small>
+              <strong>딱밤온라인</strong>
+              <small>DDAKBAM ONLINE · SEOUL</small>
             </span>
           </a>
           <p>2~4인 실시간 2장 섯다</p>
@@ -27,7 +27,7 @@ export default function Home() {
 
       <footer className="site-footer">
         <span>실제 금전이 오가지 않는 친선 게임입니다.</span>
-        <span>© 2026 DDAKBAM SOCIETY</span>
+        <span>© 2026 DDAKBAM ONLINE</span>
       </footer>
     </main>
   );
