@@ -31,6 +31,29 @@ function isRecord(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+function isCanonicalArray(value) {
+  if (
+    !Array.isArray(value) ||
+    Object.getPrototypeOf(value) !== Array.prototype ||
+    Reflect.ownKeys(value).length !== value.length + 1
+  ) {
+    return false;
+  }
+
+  for (let index = 0; index < value.length; index += 1) {
+    const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+    if (
+      descriptor === undefined ||
+      !Object.hasOwn(descriptor, "value") ||
+      descriptor.enumerable !== true
+    ) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 function isPlainRecord(value) {
   if (!isRecord(value)) {
     return false;
@@ -58,7 +81,7 @@ function isPlayerId(value) {
 
 function isPlayerList(value, minimum = 0, maximum = MAX_PLAYERS) {
   return (
-    Array.isArray(value) &&
+    isCanonicalArray(value) &&
     value.length >= minimum &&
     value.length <= maximum &&
     value.every(isPlayerId) &&
@@ -92,7 +115,7 @@ function parseExactQuantity(value, allowZero) {
   let quantity;
 
   if (typeof value === "number") {
-    if (!Number.isSafeInteger(value)) {
+    if (!Number.isSafeInteger(value) || Object.is(value, -0)) {
       return null;
     }
     quantity = BigInt(value);
@@ -196,6 +219,7 @@ function readBetting(value, playerIds, foldedPlayerIds, foldedStakes) {
   const pendingPlayers = new Set(value.pendingPlayerIds);
   if (value.status === "betting") {
     if (
+      activePlayerIds.length < MIN_PLAYERS ||
       value.pendingPlayerIds.length === 0 ||
       value.turnPlayerId !== value.pendingPlayerIds[0]
     ) {
@@ -243,7 +267,7 @@ function readEvaluation(value) {
     value.rank > 3 ||
     !Number.isInteger(value.tiebreak) ||
     value.tiebreak < 0 ||
-    !Array.isArray(value.months) ||
+    !isCanonicalArray(value.months) ||
     value.months.length !== 2 ||
     value.months.some(
       (month) => !Number.isInteger(month) || month < 1 || month > 10,
@@ -323,7 +347,11 @@ export function readPublicOnlineRound(value) {
     value.foldedPlayerIds,
     value.foldedStakes,
   );
-  if (betting === null || !isRecord(value.evaluations) || !Array.isArray(value.winnerIds)) {
+  if (
+    betting === null ||
+    !isRecord(value.evaluations) ||
+    !isCanonicalArray(value.winnerIds)
+  ) {
     return null;
   }
 

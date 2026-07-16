@@ -116,6 +116,22 @@ test("accepts betting with a folded commitment below a later stake", () => {
   assert.deepEqual(readPublicOnlineRound(foldedBettingRound), foldedBettingRound);
 });
 
+test("rejects betting after folds leave one active player", () => {
+  const oneSurvivorBettingRound = {
+    ...foldedBettingRound,
+    foldedPlayerIds: ["b", "c"],
+    foldedStakes: { b: 1, c: 1 },
+    betting: {
+      ...foldedBettingRound.betting,
+      commitments: { a: 0, b: 1, c: 1 },
+      pot: 2,
+      pendingPlayerIds: ["a"],
+    },
+  };
+
+  assert.equal(readPublicOnlineRound(oneSurvivorBettingRound), null);
+});
+
 test("requires exact top-level folded fields", () => {
   assert.equal(
     readPublicOnlineRound(withoutKey(safeRound, "foldedPlayerIds")),
@@ -154,6 +170,39 @@ test("rejects outsider, duplicate, unordered, and exhaustive folded IDs", () => 
 
   for (const state of malformedStates) {
     assert.equal(readPublicOnlineRound(state), null);
+  }
+});
+
+test("rejects folded player arrays with non-JSON container behavior", () => {
+  const withExtraProperty = ["b"];
+  withExtraProperty.hands = ["hidden"];
+
+  const withCustomPrototype = ["b"];
+  Object.setPrototypeOf(
+    withCustomPrototype,
+    Object.create(Array.prototype),
+  );
+
+  const withSymbol = ["b"];
+  withSymbol[Symbol("hands")] = ["hidden"];
+
+  const withAccessor = ["b"];
+  Object.defineProperty(withAccessor, "0", {
+    configurable: true,
+    enumerable: true,
+    get: () => "b",
+  });
+
+  for (const foldedPlayerIds of [
+    withExtraProperty,
+    withCustomPrototype,
+    withSymbol,
+    withAccessor,
+  ]) {
+    assert.equal(
+      readPublicOnlineRound({ ...foldedBettingRound, foldedPlayerIds }),
+      null,
+    );
   }
 });
 
@@ -300,6 +349,39 @@ test("rejects strings for safely representable exact quantities", () => {
       betting: { ...showdownRound.betting, pot: "6" },
     },
     foldedSafeStringRound,
+  ];
+
+  for (const state of malformedStates) {
+    assert.equal(readPublicOnlineRound(state), null);
+  }
+});
+
+test("rejects negative zero in every exact quantity position", () => {
+  const malformedStates = [
+    {
+      ...safeRound,
+      betting: { ...safeRound.betting, currentStake: -0 },
+    },
+    {
+      ...safeRound,
+      betting: { ...safeRound.betting, pot: -0 },
+    },
+    {
+      ...safeRound,
+      betting: {
+        ...safeRound.betting,
+        commitments: { a: -0, b: 0 },
+      },
+    },
+    {
+      ...foldedBettingRound,
+      foldedStakes: { b: -0 },
+      betting: {
+        ...foldedBettingRound.betting,
+        commitments: { a: 0, b: -0, c: 0 },
+        pot: 0,
+      },
+    },
   ];
 
   for (const state of malformedStates) {
