@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { createClient } from "@supabase/supabase-js";
 
@@ -44,9 +46,12 @@ const qaAccountIds = [
   observerAccountId,
 ];
 const qaEmails = qaAccountIds.map(
-  (accountId) => `${accountId}@${internalDomain}`,
+  (accountId) => `${accountId}.${qaNamespace}@${internalDomain}`,
 );
 const qaEmailSet = new Set(qaEmails);
+const qaEmailByAccountId = new Map(
+  qaAccountIds.map((accountId, index) => [accountId, qaEmails[index]]),
+);
 const qaRoomCodes = [0, 1, 2].map((index) =>
   `Q${qaNamespace.slice(5 + index * 5, 10 + index * 5)}`
     .toUpperCase()
@@ -57,32 +62,79 @@ assert.equal(qaRoomCodeSet.size, qaRoomCodes.length);
 let qaRoomCodeIndex = 0;
 let offlineRpcResponseBody = null;
 
-async function fetchWithTimeout(input, init = {}) {
-  const abortController = new AbortController();
-  const upstreamSignal =
-    init.signal ?? (input instanceof Request ? input.signal : null);
-  const forwardAbort = () => abortController.abort(upstreamSignal.reason);
-  if (upstreamSignal?.aborted) {
-    forwardAbort();
-  } else {
-    upstreamSignal?.addEventListener("abort", forwardAbort, { once: true });
-  }
-  const timeoutId = setTimeout(() => {
-    abortController.abort(
-      new DOMException(
-        `Supabase request exceeded ${REQUEST_TIMEOUT_MS}ms`,
-        "AbortError",
-      ),
-    );
-  }, REQUEST_TIMEOUT_MS);
+export function createFetchWithTimeout({
+  fetchImpl = fetch,
+  timeoutMs = REQUEST_TIMEOUT_MS,
+} = {}) {
+  async function bufferResponse(response, signal) {
+    let body = null;
+    if (response.body !== null) {
+      let rejectForAbort;
+      const aborted = new Promise((_, reject) => {
+        rejectForAbort = () => reject(signal.reason);
+        if (signal.aborted) rejectForAbort();
+        else signal.addEventListener("abort", rejectForAbort, { once: true });
+      });
+      try {
+        body = await Promise.race([response.arrayBuffer(), aborted]);
+      } finally {
+        signal.removeEventListener("abort", rejectForAbort);
+        if (signal.aborted) {
+          try {
+            void response.body.cancel(signal.reason).catch(() => {});
+          } catch {
+            // The body reader may already own the stream; aborting fetch still cancels it.
+          }
+        }
+      }
+    }
 
-  try {
-    return await fetch(input, { ...init, signal: abortController.signal });
-  } finally {
-    clearTimeout(timeoutId);
-    upstreamSignal?.removeEventListener("abort", forwardAbort);
+    const bufferedResponse = new Response(body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: response.headers,
+    });
+    Object.defineProperty(bufferedResponse, "url", {
+      configurable: true,
+      enumerable: true,
+      value: response.url,
+    });
+    return bufferedResponse;
   }
+
+  return async function fetchWithTimeout(input, init = {}) {
+    const abortController = new AbortController();
+    const upstreamSignal =
+      init.signal ?? (input instanceof Request ? input.signal : null);
+    const forwardAbort = () => abortController.abort(upstreamSignal.reason);
+    if (upstreamSignal?.aborted) {
+      forwardAbort();
+    } else {
+      upstreamSignal?.addEventListener("abort", forwardAbort, { once: true });
+    }
+    const timeoutId = setTimeout(() => {
+      abortController.abort(
+        new DOMException(
+          `Supabase request exceeded ${timeoutMs}ms`,
+          "AbortError",
+        ),
+      );
+    }, timeoutMs);
+
+    try {
+      const response = await fetchImpl(input, {
+        ...init,
+        signal: abortController.signal,
+      });
+      return await bufferResponse(response, abortController.signal);
+    } finally {
+      clearTimeout(timeoutId);
+      upstreamSignal?.removeEventListener("abort", forwardAbort);
+    }
+  };
 }
+
+const fetchWithTimeout = createFetchWithTimeout();
 
 async function fetchWithOfflineCapture(input, init) {
   const response = await fetchWithTimeout(input, init);
@@ -119,13 +171,17 @@ const offlineObligationIds = [];
 const participantClients = new Map();
 
 async function provisionQaUser(accountId) {
-  const email = `${accountId}@${internalDomain}`;
-  assert.ok(qaEmailSet.has(email), "QA user email was not pre-registered");
+  const email = qaEmailByAccountId.get(accountId);
+  assert.ok(email, "QA user email was not pre-registered");
   const { data, error } = await admin.auth.admin.createUser({
     email,
     password: qaPassword,
     email_confirm: true,
-    user_metadata: { account_id: accountId, display_name: accountId },
+    user_metadata: {
+      account_id: accountId,
+      display_name: accountId,
+      qa_namespace: qaNamespace,
+    },
   });
   assert.ifError(error);
   assert.ok(data.user?.id);
@@ -138,22 +194,39 @@ function trackUnique(ids, id) {
   return id;
 }
 
-async function discoverQaNamespaceUsers() {
+export async function discoverQaNamespaceUsers({
+  authAdmin = admin.auth.admin,
+  expectedEmails = qaEmailSet,
+  namespace = qaNamespace,
+  perPage = AUTH_USERS_PER_PAGE,
+  maxPages = MAX_AUTH_USER_PAGES,
+} = {}) {
+  const expectedEmailSet =
+    expectedEmails instanceof Set ? expectedEmails : new Set(expectedEmails);
   const namespaceUsers = [];
-  let page = 1;
-  for (let pageCount = 0; pageCount < MAX_AUTH_USER_PAGES; pageCount += 1) {
-    const { data, error } = await admin.auth.admin.listUsers({
+  for (let page = 1; page <= maxPages; page += 1) {
+    const { data, error } = await authAdmin.listUsers({
       page,
-      perPage: AUTH_USERS_PER_PAGE,
+      perPage,
     });
     assert.ifError(error);
-    for (const user of data.users) {
-      if (qaEmailSet.has(user.email)) namespaceUsers.push(user);
+    const users = data.users ?? [];
+    for (const user of users) {
+      if (!expectedEmailSet.has(user.email)) continue;
+      assert.equal(
+        user.user_metadata?.qa_namespace,
+        namespace,
+        "expected QA email is missing its exact namespace marker",
+      );
+      namespaceUsers.push(user);
     }
-    if (data.nextPage === null) return namespaceUsers;
-    page = data.nextPage;
+    const total =
+      Number.isSafeInteger(data.total) && data.total >= 0 ? data.total : null;
+    if (users.length < perPage || (total !== null && page * perPage >= total)) {
+      return namespaceUsers;
+    }
   }
-  assert.fail(`QA Auth namespace exceeds ${MAX_AUTH_USER_PAGES} pages`);
+  assert.fail(`QA Auth namespace exceeds ${maxPages} pages`);
 }
 
 function trackResultRows(rows) {
@@ -644,6 +717,7 @@ async function readRoundResults(roundToken) {
   return trackResultRows(data);
 }
 
+async function runLiveAuthorityQa() {
 let qaError = null;
 try {
 const provisionedHostId = await provisionQaUser(hostAccountId);
@@ -1306,3 +1380,12 @@ try {
 }
 
 throwQaOrCleanupError(qaError, cleanupError);
+}
+
+const isDirectExecution =
+  Boolean(process.argv[1]) &&
+  import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
+
+if (isDirectExecution) {
+  await runLiveAuthorityQa();
+}

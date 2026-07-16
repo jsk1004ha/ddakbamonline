@@ -7,6 +7,191 @@ const script = await readFile(
   "utf8",
 );
 
+const importEnv = {
+  NEXT_PUBLIC_SUPABASE_URL: "https://example.supabase.co",
+  NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: "test-publishable-key",
+  SUPABASE_SERVICE_ROLE_KEY: "test-service-role-key",
+  QA_PASSWORD: "test-password",
+};
+for (const [name, value] of Object.entries(importEnv)) {
+  process.env[name] ??= value;
+}
+
+const { createFetchWithTimeout, discoverQaNamespaceUsers } = await import(
+  "../scripts/live-authority-qa.mjs"
+);
+
+test("live QA exposes testable helpers without running the remote scenario on import", () => {
+  assert.match(script, /export function createFetchWithTimeout/);
+  assert.match(script, /export async function discoverQaNamespaceUsers/);
+  assert.match(script, /async function runLiveAuthorityQa\(\)/);
+  assert.match(
+    script,
+    /if \(isDirectExecution\) \{\s*await runLiveAuthorityQa\(\);\s*\}/,
+  );
+});
+
+test("namespace discovery increments pages locally and stops from returned users and total", async () => {
+  const namespace = "0123456789abcdef0123456789abcdef";
+  const firstEmail = `qa_host_01234.${namespace}@accounts.ddakbamonline.com`;
+  const secondEmail = `qa_watch_01234.${namespace}@accounts.ddakbamonline.com`;
+  const pages = [
+    [
+      { id: "other", email: "other@example.com", user_metadata: {} },
+      {
+        id: "first",
+        email: firstEmail,
+        user_metadata: { qa_namespace: namespace },
+      },
+    ],
+    [
+      {
+        id: "second",
+        email: secondEmail,
+        user_metadata: { qa_namespace: namespace },
+      },
+    ],
+  ];
+  const calls = [];
+  const authAdmin = {
+    async listUsers(options) {
+      calls.push(options);
+      return {
+        data: {
+          users: pages[options.page - 1] ?? [],
+          total: 3,
+          nextPage: 999,
+        },
+        error: null,
+      };
+    },
+  };
+
+  const users = await discoverQaNamespaceUsers({
+    authAdmin,
+    expectedEmails: new Set([firstEmail, secondEmail]),
+    namespace,
+    perPage: 2,
+    maxPages: 4,
+  });
+
+  assert.deepEqual(calls, [
+    { page: 1, perPage: 2 },
+    { page: 2, perPage: 2 },
+  ]);
+  assert.deepEqual(
+    users.map(({ id }) => id),
+    ["first", "second"],
+  );
+});
+
+test("namespace discovery rejects an expected email without the exact marker", async () => {
+  const namespace = "0123456789abcdef0123456789abcdef";
+  const expectedEmail =
+    `qa_host_01234.${namespace}@accounts.ddakbamonline.com`;
+  const authAdmin = {
+    async listUsers() {
+      return {
+        data: {
+          users: [
+            {
+              id: "unrelated-user",
+              email: expectedEmail,
+              user_metadata: { qa_namespace: "different-namespace" },
+            },
+          ],
+          total: 1,
+        },
+        error: null,
+      };
+    },
+  };
+  const claimedUserIds = [];
+  const deletedUserIds = [];
+
+  await assert.rejects(
+    async () => {
+      const users = await discoverQaNamespaceUsers({
+        authAdmin,
+        expectedEmails: new Set([expectedEmail]),
+        namespace,
+        perPage: 10,
+        maxPages: 2,
+      });
+      claimedUserIds.push(...users.map(({ id }) => id));
+      deletedUserIds.push(...claimedUserIds);
+    },
+    /expected QA email is missing its exact namespace marker/,
+  );
+  assert.deepEqual(claimedUserIds, []);
+  assert.deepEqual(deletedUserIds, []);
+});
+
+test("request deadline covers a hanging response body and releases the caller", async () => {
+  const hangingBody = new ReadableStream({
+    pull() {
+      return new Promise(() => {});
+    },
+  });
+  const fetchWithTimeout = createFetchWithTimeout({
+    timeoutMs: 20,
+    fetchImpl: async () => new Response(hangingBody),
+  });
+  let cleanupReached = false;
+  let safetyTimeoutId;
+  const safetyTimeout = new Promise((_, reject) => {
+    safetyTimeoutId = setTimeout(
+      () => reject(new Error("test safety timeout expired")),
+      250,
+    );
+  });
+
+  try {
+    await assert.rejects(
+      Promise.race([
+        (async () => {
+          try {
+            const response = await fetchWithTimeout("https://example.test");
+            await response.text();
+          } finally {
+            cleanupReached = true;
+          }
+        })(),
+        safetyTimeout,
+      ]),
+      { name: "AbortError" },
+    );
+  } finally {
+    clearTimeout(safetyTimeoutId);
+  }
+  assert.equal(cleanupReached, true);
+});
+
+test("buffered request response preserves HTTP metadata and reusable body semantics", async () => {
+  const upstream = new Response("buffered", {
+    status: 201,
+    statusText: "Created",
+    headers: { "x-qa": "buffered" },
+  });
+  Object.defineProperty(upstream, "url", {
+    value: "https://example.test/rest/v1/rooms",
+  });
+  const fetchWithTimeout = createFetchWithTimeout({
+    timeoutMs: 100,
+    fetchImpl: async () => upstream,
+  });
+
+  const response = await fetchWithTimeout("https://example.test");
+
+  assert.notEqual(response, upstream);
+  assert.equal(response.status, 201);
+  assert.equal(response.statusText, "Created");
+  assert.equal(response.headers.get("x-qa"), "buffered");
+  assert.equal(response.url, "https://example.test/rest/v1/rooms");
+  assert.equal(await response.clone().text(), "buffered");
+  assert.equal(await response.text(), "buffered");
+});
+
 test("live authority QA provisions disposable users and always cleans them up", () => {
   assert.match(script, /"SUPABASE_SERVICE_ROLE_KEY"/);
   assert.match(script, /auth\.admin\.createUser/);
@@ -32,14 +217,30 @@ test("QA namespace identifiers are registered before creates and recover respons
   assert.ok(emailsIndex > namespaceIndex);
   assert.ok(roomCodesIndex > emailsIndex);
   assert.ok(roomCodesIndex < firstRemoteCreate);
+  assert.match(
+    script,
+    /\(accountId\) => `\$\{accountId\}\.\$\{qaNamespace\}@\$\{internalDomain\}`/,
+  );
+  assert.match(script, /const qaSuffix = qaNamespace\.slice\(0, 5\)/);
   assert.match(script, /const qaEmailSet = new Set\(qaEmails\)/);
   assert.match(script, /const qaRoomCodeSet = new Set\(qaRoomCodes\)/);
   assert.match(
     script,
-    /async function discoverQaNamespaceUsers\(\)[\s\S]*?auth\.admin\.listUsers\(/,
+    /export async function discoverQaNamespaceUsers\(\{[\s\S]*?authAdmin\.listUsers\(/,
   );
-  assert.match(script, /pageCount < MAX_AUTH_USER_PAGES/);
-  assert.match(script, /qaEmailSet\.has\(user\.email\)/);
+  assert.match(script, /for \(let page = 1; page <= maxPages; page \+= 1\)/);
+  assert.match(script, /users\.length < perPage/);
+  assert.match(script, /page \* perPage >= total/);
+  assert.doesNotMatch(script, /data\.nextPage/);
+  assert.match(script, /expectedEmailSet\.has\(user\.email\)/);
+  assert.match(
+    script,
+    /user\.user_metadata\?\.qa_namespace,[\s\S]*?namespace,[\s\S]*?"expected QA email is missing its exact namespace marker"/,
+  );
+  assert.match(
+    script,
+    /user_metadata:\s*\{[\s\S]*?qa_namespace: qaNamespace/,
+  );
   assert.match(
     script,
     /async function discoverCleanupTargets\(\)[\s\S]*?discoverQaNamespaceUsers\(\)[\s\S]*?trackUnique\(createdUserIds,[\s\S]*?\.from\("game_rooms"\)[\s\S]*?\.in\("code", qaRoomCodes\)[\s\S]*?trackUnique\(createdRoomIds,/,
@@ -56,6 +257,7 @@ test("QA namespace identifiers are registered before creates and recover respons
 
 test("every Supabase client shares an aborting fetch timeout without dropping signals", () => {
   assert.match(script, /const REQUEST_TIMEOUT_MS = 30_000/);
+  assert.match(script, /export function createFetchWithTimeout/);
   assert.match(script, /async function fetchWithTimeout\(input, init = \{\}\)/);
   assert.match(
     script,
@@ -63,15 +265,27 @@ test("every Supabase client shares an aborting fetch timeout without dropping si
   );
   assert.match(script, /const abortController = new AbortController\(\)/);
   assert.match(script, /upstreamSignal\?\.addEventListener\("abort", forwardAbort, \{ once: true \}\)/);
-  assert.match(script, /setTimeout\([\s\S]*?abortController\.abort\([\s\S]*?REQUEST_TIMEOUT_MS/);
   assert.match(
     script,
-    /fetch\(input, \{ \.\.\.init, signal: abortController\.signal \}\)/,
+    /setTimeout\([\s\S]*?abortController\.abort\([\s\S]*?timeoutMs/,
   );
+  assert.match(
+    script,
+    /fetchImpl\(input, \{[\s\S]*?\.\.\.init,[\s\S]*?signal: abortController\.signal/,
+  );
+  assert.match(
+    script,
+    /Promise\.race\(\[response\.arrayBuffer\(\), aborted\]\)/,
+  );
+  assert.match(
+    script,
+    /new Response\(body, \{[\s\S]*?status: response\.status,[\s\S]*?statusText: response\.statusText,[\s\S]*?headers: response\.headers/,
+  );
+  assert.match(script, /Object\.defineProperty\(bufferedResponse, "url"/);
   assert.match(script, /finally \{[\s\S]*?clearTimeout\(timeoutId\)[\s\S]*?removeEventListener\("abort", forwardAbort\)/);
   assert.match(
     script,
-    /async function fetchWithOfflineCapture[\s\S]*?fetchWithTimeout\(input, init\)/,
+    /async function fetchWithOfflineCapture[\s\S]*?fetchWithTimeout\(input, init\)[\s\S]*?response\.clone\(\)\.text\(\)/,
   );
   assert.match(
     script,
@@ -98,7 +312,7 @@ test("showdown driving and namespace pagination fail explicitly at finite caps",
   assert.match(showdown, /bettingActionCount \+= 1/);
   assert.match(
     script,
-    /assert\.fail\(`QA Auth namespace exceeds \$\{MAX_AUTH_USER_PAGES\} pages`\)/,
+    /assert\.fail\(`QA Auth namespace exceeds \$\{maxPages\} pages`\)/,
   );
 });
 
