@@ -3,13 +3,14 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import ts from "typescript";
 
-const script = await readFile(
+const readSource = async (url) =>
+  (await readFile(url, "utf8")).replace(/\r\n?/g, "\n");
+
+const script = await readSource(
   new URL("../scripts/live-authority-qa.mjs", import.meta.url),
-  "utf8",
 );
-const accountIdSource = await readFile(
+const accountIdSource = await readSource(
   new URL("../src/lib/auth/account-id.ts", import.meta.url),
-  "utf8",
 );
 const accountIdModule = ts.transpileModule(accountIdSource, {
   compilerOptions: {
@@ -20,12 +21,11 @@ const accountIdModule = ts.transpileModule(accountIdSource, {
 const { accountIdEmail, validateAccountId } = await import(
   `data:text/javascript;base64,${Buffer.from(accountIdModule).toString("base64")}`
 );
-const handleNewUserSql = await readFile(
+const handleNewUserSql = await readSource(
   new URL(
     "../supabase/migrations/20260715133733_normalize_korean_auth_hash_case.sql",
     import.meta.url,
   ),
-  "utf8",
 );
 
 const importEnv = {

@@ -4,21 +4,20 @@ import test from "node:test";
 
 import { readPublicOnlineRound } from "../src/lib/game/online-round.mjs";
 
-const onlineGameSource = await readFile(
+const readSource = async (url) =>
+  (await readFile(url, "utf8")).replace(/\r\n?/g, "\n");
+
+const onlineGameSource = await readSource(
   new URL("../src/components/online-room-game.tsx", import.meta.url),
-  "utf8",
 );
-const accountRoomSource = await readFile(
+const accountRoomSource = await readSource(
   new URL("../src/components/account-room-panel.tsx", import.meta.url),
-  "utf8",
 );
-const databaseTypesSource = await readFile(
+const databaseTypesSource = await readSource(
   new URL("../src/lib/supabase/database.types.ts", import.meta.url),
-  "utf8",
 );
-const globalStylesSource = await readFile(
+const globalStylesSource = await readSource(
   new URL("../src/app/globals.css", import.meta.url),
-  "utf8",
 );
 
 const safeRound = {
