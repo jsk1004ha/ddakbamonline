@@ -20,6 +20,132 @@ test("live authority QA provisions disposable users and always cleans them up", 
   assert.doesNotMatch(script, /"QA_HOST_ID"|"QA_GUEST_ID"/);
 });
 
+test("live authority QA provisions four participant clients and maps every actor", () => {
+  assert.match(script, /const guestTwo = client\(\)/);
+  assert.match(script, /const guestThree = client\(\)/);
+  assert.match(script, /const guestTwoAccountId = `qa_guest_two_\$\{qaSuffix\}`/);
+  assert.match(script, /const guestThreeAccountId = `qa_guest_three_\$\{qaSuffix\}`/);
+  assert.match(script, /provisionQaUser\(guestTwoAccountId\)/);
+  assert.match(script, /provisionQaUser\(guestThreeAccountId\)/);
+  assert.match(script, /signIn\(guestTwo, guestTwoAccountId\)/);
+  assert.match(script, /signIn\(guestThree, guestThreeAccountId\)/);
+  assert.match(script, /participantClients\.set\(hostId, host\)/);
+  assert.match(script, /participantClients\.set\(guestId, guest\)/);
+  assert.match(script, /participantClients\.set\(guestTwoId, guestTwo\)/);
+  assert.match(script, /participantClients\.set\(guestThreeId, guestThree\)/);
+  assert.match(script, /function actorClient\(userId\)/);
+});
+
+test("four-player live QA covers presence, legal folds, showdown, and exact debts", () => {
+  for (const clientName of ["host", "guest", "guestTwo", "guestThree"]) {
+    assert.match(
+      script,
+      new RegExp(`${clientName}\\.rpc\\(\\s*"touch_room_presence"`),
+      `${clientName} must touch presence`,
+    );
+  }
+
+  assert.ok(
+    [...script.matchAll(/action_name:\s*"fold"/g)].length >= 2,
+    "two legal turns must fold",
+  );
+  assert.match(script, /assert\.equal\(room\.state\.foldedPlayerIds\.length,\s*2\)/);
+  assert.match(script, /assert\.equal\(room\.state\.phase,\s*"showdown"\)/);
+  assert.match(
+    script,
+    /!room\.state\.winnerIds\.some\(\(id\)\s*=>\s*room\.state\.foldedPlayerIds\.includes\(id\)\)/,
+  );
+  assert.match(script, /const frozen = room\.state\.foldedStakes\[debt\.debtor_id\]/);
+  assert.match(script, /const expected = frozen \?\? room\.state\.betting\.currentStake/);
+  assert.match(
+    script,
+    /assert\.equal\(BigInt\(debt\.initial_hits\),\s*BigInt\(expected\)\)/,
+  );
+  assert.doesNotMatch(script, /Number\([^\n]*(?:currentStake|initial_hits|foldedStakes)/);
+});
+
+test("live QA rejects an offline next round and restores it after presence", () => {
+  assert.match(script, /\.update\(\{\s*last_seen_at:/);
+  assert.match(script, /Every player must be online/i);
+  assert.match(script, /expectErrorMessage\([\s\S]*?start_game_round[\s\S]*?Every player must be online/);
+  assert.match(
+    script,
+    /guestThree\.rpc\(\s*"touch_room_presence",\s*\{\s*target_room:\s*roomId\s*\}/,
+  );
+  assert.match(
+    script,
+    /guestThree\.rpc\([\s\S]*?touch_room_presence[\s\S]*?host\.rpc\([\s\S]*?start_game_round/,
+  );
+});
+
+test("authenticated observer cannot mutate another room lifecycle", () => {
+  for (const rpcName of [
+    "touch_room_presence",
+    "close_game_room",
+    "leave_game_room",
+    "expire_idle_game_room",
+  ]) {
+    assert.match(
+      script,
+      new RegExp(`observer\\.rpc\\(\\s*"${rpcName}"`),
+      `observer must exercise ${rpcName}`,
+    );
+  }
+  assert.match(script, /assertRoomUnchanged\([\s\S]*?observer lifecycle/);
+  assert.match(script, /observerLifecycleDenied:\s*true/);
+});
+
+test("separate active rooms prove leave closure and concurrent idle expiry", () => {
+  assert.match(script, /const leaveRoom = await createActiveRoom\(/);
+  assert.match(
+    script,
+    /guest\.rpc\(\s*"leave_game_room",\s*\{[\s\S]*?target_room:\s*leaveRoom\.id/,
+  );
+  assert.match(script, /assert\.equal\(closedLeaveRoom\.status,\s*"closed"\)/);
+  assert.match(script, /assert\.equal\(leaveMemberCount,\s*0\)/);
+  assert.match(script, /const idleRoom = await createActiveRoom\(/);
+  assert.match(script, /\.update\(\{\s*updated_at:/);
+  assert.match(
+    script,
+    /Promise\.all\(\[[\s\S]*?host\.rpc\(\s*"expire_idle_game_room"[\s\S]*?guest\.rpc\(\s*"expire_idle_game_room"/,
+  );
+  assert.match(script, /assert\.equal\(hostExpiry\.data\.expired,\s*true\)/);
+  assert.match(script, /assert\.equal\(guestExpiry\.data\.expired,\s*true\)/);
+  assert.match(script, /assert\.equal\(closedIdleRoom\.status,\s*"closed"\)/);
+  assert.match(script, /assert\.equal\(idleMemberCount,\s*0\)/);
+});
+
+test("cleanup tracks every generated entity, preserves dependency order, and proves zero residue", () => {
+  assert.match(script, /const createdRoomIds = \[\]/);
+  assert.match(script, /const resultIds = \[\]/);
+  assert.match(script, /const obligationIds = \[\]/);
+  assert.match(script, /createdRoomIds\.push\(/);
+  assert.match(script, /resultIds\.push\(/);
+  assert.match(script, /obligationIds\.push\(/);
+
+  const cleanup = script.match(
+    /async function cleanupQaData\(\)\s*\{([\s\S]*?)\n\}/,
+  )?.[1];
+  assert.ok(cleanup, "expected cleanupQaData body");
+  const obligationDelete = cleanup.indexOf('.from("hit_obligations")');
+  const resultDelete = cleanup.indexOf('.from("game_results").delete()');
+  const roomDelete = cleanup.indexOf('.from("game_rooms").delete()');
+  const userDelete = cleanup.indexOf("auth.admin.deleteUser");
+  assert.ok(obligationDelete >= 0, "obligations must be cleaned");
+  assert.ok(obligationDelete < resultDelete, "obligations must precede results");
+  assert.ok(resultDelete < roomDelete, "results must precede rooms");
+  assert.ok(roomDelete < userDelete, "rooms must precede auth users");
+  assert.match(cleanup, /assertNoQaResidue\(\)/);
+
+  assert.match(script, /async function assertNoQaResidue\(\)/);
+  assert.match(script, /\.from\("profiles"\)[\s\S]*?\.in\("id",\s*createdUserIds\)/);
+  assert.match(script, /auth\.admin\.getUserById/);
+  assert.match(script, /\.from\("game_rooms"\)[\s\S]*?\.in\("id",\s*createdRoomIds\)/);
+  assert.match(script, /\.from\("game_results"\)[\s\S]*?\.in\("id",\s*resultIds\)/);
+  assert.match(script, /\.from\("hit_obligations"\)[\s\S]*?\.in\("id",\s*obligationIds\)/);
+  assert.match(script, /assert\.equal\([^\n]*\.length,\s*0/);
+});
+
 test("live authority QA creates an exact offline obligation with actor provenance", () => {
   assert.match(
     script,
