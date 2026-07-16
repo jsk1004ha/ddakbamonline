@@ -32,6 +32,42 @@ function functionBody(qualifiedName) {
   return match[1];
 }
 
+test("room activity timestamps preserve explicit privileged backdating", () => {
+  const helper = functionBody("private.set_game_room_updated_at");
+  assert.match(
+    sql,
+    /create or replace function private\.set_game_room_updated_at\(\)\s+returns trigger\s+language plpgsql\s+security definer\s+set search_path = ''/i,
+  );
+  assert.match(
+    helper,
+    /if new\.updated_at is not distinct from old\.updated_at then[\s\S]*?new\.updated_at := pg_catalog\.clock_timestamp\(\)/i,
+  );
+  assert.match(helper, /return new/i);
+
+  assert.match(
+    sql,
+    /drop trigger if exists game_rooms_set_updated_at\s+on public\.game_rooms/i,
+  );
+  assert.match(
+    sql,
+    /create trigger game_rooms_set_updated_at\s+before update on public\.game_rooms\s+for each row execute function private\.set_game_room_updated_at\(\)/i,
+  );
+  assert.doesNotMatch(
+    sql,
+    /drop trigger if exists (?:profiles|hit_obligations)_set_updated_at/i,
+  );
+  assert.doesNotMatch(sql, /create or replace function public\.set_updated_at\(\)/i);
+
+  assert.match(
+    sql,
+    /revoke all on function private\.set_game_room_updated_at\(\)\s+from public, anon, authenticated/i,
+  );
+  assert.doesNotMatch(
+    sql,
+    /grant\s+update(?:\s*\([^)]*\))?\s+on(?:\s+table)?\s+public\.game_rooms\s+to\s+(?:public|anon|authenticated)/i,
+  );
+});
+
 test("presence is server-owned and indexed without touching room activity", () => {
   assert.match(
     sql,

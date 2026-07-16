@@ -4,6 +4,26 @@ alter table public.room_members
 create index room_members_room_last_seen_at_idx
   on public.room_members (room_id, last_seen_at desc);
 
+create or replace function private.set_game_room_updated_at()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $function$
+begin
+  if new.updated_at is not distinct from old.updated_at then
+    new.updated_at := pg_catalog.clock_timestamp();
+  end if;
+  return new;
+end;
+$function$;
+
+drop trigger if exists game_rooms_set_updated_at
+  on public.game_rooms;
+create trigger game_rooms_set_updated_at
+before update on public.game_rooms
+for each row execute function private.set_game_room_updated_at();
+
 alter table public.game_actions
   drop constraint game_actions_action_name_check,
   drop constraint game_actions_raise_shape_check,
@@ -346,6 +366,8 @@ revoke all on function private.build_public_round_state(
   uuid, bigint, uuid[], uuid[], jsonb, jsonb, numeric, numeric,
   uuid, uuid, text, uuid[], text, jsonb, uuid[]
 ) from public, anon, authenticated;
+revoke all on function private.set_game_room_updated_at()
+  from public, anon, authenticated;
 revoke all on function private.lock_waiting_room_member_delete()
   from public, anon, authenticated;
 revoke all on function private.finish_game_room(uuid)
