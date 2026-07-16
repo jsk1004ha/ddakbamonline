@@ -811,6 +811,10 @@ test("waiting rooms poll as a fallback when realtime changes are missed", () => 
     accountRoomSource,
     /return \(\) => window\.clearInterval\(interval\);/,
   );
+  assert.match(
+    accountRoomSource,
+    /const refreshScope = `\$\{activeScope\.actorId\}:\$\{activeScope\.generation\}:\$\{roomId\}`;[\s\S]*?roomRefreshCoordinatorRef\.current\.run\([\s\S]*?refreshScope/,
+  );
 });
 
 test("lifecycle polling prevents overlapping RPCs and coalesces room refreshes", () => {

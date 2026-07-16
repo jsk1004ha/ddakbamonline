@@ -27,6 +27,7 @@ import {
   generateRoomCode,
   normalizeRoomCode,
 } from "@/lib/rooms";
+import { createInFlightRequestCoordinator } from "@/lib/in-flight-request.mjs";
 import {
   getSupabaseBrowserClient,
   isSupabaseConfigured,
@@ -96,6 +97,7 @@ export default function AccountRoomPanel() {
   const offlineMutationRef = useRef<OfflineMutation | null>(null);
   const currentRoomIdRef = useRef<string | null>(null);
   const roomRefreshRequestRef = useRef(0);
+  const roomRefreshCoordinatorRef = useRef(createInFlightRequestCoordinator());
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [room, setRoom] = useState<Room | null>(null);
@@ -187,57 +189,63 @@ export default function AccountRoomPanel() {
   );
 
   const refreshRoom = useCallback(
-    async (roomId: string, scope?: AccountScope) => {
-      if (!supabase || !user) return;
+    (roomId: string, scope?: AccountScope): Promise<void> => {
+      if (!supabase || !user) return Promise.resolve();
       const activeScope = scope ?? captureAccountScope(user.id);
-      if (!isActiveAccount(activeScope)) return;
-      const refreshRequest = ++roomRefreshRequestRef.current;
-      const startingRoomId = currentRoomIdRef.current;
-      const [roomResponse, membersResponse, membershipResponse] = await Promise.all([
-        supabase.from("game_rooms").select("*").eq("id", roomId).single(),
-        supabase
-          .from("room_members")
-          .select("*")
-          .eq("room_id", roomId)
-          .order("seat"),
-        supabase
-          .from("room_members")
-          .select("room_id")
-          .eq("room_id", roomId)
-          .eq("user_id", activeScope.actorId)
-          .maybeSingle(),
-      ]);
-      if (roomRefreshRequestRef.current !== refreshRequest) return;
-      if (scope && !isActiveAccount(scope)) return;
-      if (
-        !isActiveAccount(activeScope) ||
-        currentRoomIdRef.current !== startingRoomId
-      ) return;
-      const nextRoom = roomResponse.data;
-      if (roomResponse.error && roomResponse.error.code !== "PGRST116") {
-        throw roomResponse.error;
-      }
-      if (
-        roomResponse.error?.code === "PGRST116" ||
-        !nextRoom ||
-        nextRoom.status === "closed"
-      ) {
-        returnToGameMain("게임이 끝나 메인으로 돌아왔어요.");
-        return;
-      }
-      if (membersResponse.error) throw membersResponse.error;
-      if (membershipResponse.error) throw membershipResponse.error;
-      if (!membershipResponse.data) {
-        returnToGameMain("게임이 끝나 메인으로 돌아왔어요.");
-        return;
-      }
-      setCurrentRoom(nextRoom);
-      const nextMembers = membersResponse.data ?? [];
-      setMembers(nextMembers);
-      if (!isActiveAccount(activeScope)) return;
-      await loadProfiles(
-        nextMembers.map((member) => member.user_id),
-        activeScope,
+      if (!isActiveAccount(activeScope)) return Promise.resolve();
+      const refreshScope = `${activeScope.actorId}:${activeScope.generation}:${roomId}`;
+      return roomRefreshCoordinatorRef.current.run(
+        refreshScope,
+        async () => {
+          const refreshRequest = ++roomRefreshRequestRef.current;
+          const startingRoomId = currentRoomIdRef.current;
+          const [roomResponse, membersResponse, membershipResponse] = await Promise.all([
+            supabase.from("game_rooms").select("*").eq("id", roomId).single(),
+            supabase
+              .from("room_members")
+              .select("*")
+              .eq("room_id", roomId)
+              .order("seat"),
+            supabase
+              .from("room_members")
+              .select("room_id")
+              .eq("room_id", roomId)
+              .eq("user_id", activeScope.actorId)
+              .maybeSingle(),
+          ]);
+          if (roomRefreshRequestRef.current !== refreshRequest) return;
+          if (scope && !isActiveAccount(scope)) return;
+          if (
+            !isActiveAccount(activeScope) ||
+            currentRoomIdRef.current !== startingRoomId
+          ) return;
+          const nextRoom = roomResponse.data;
+          if (roomResponse.error && roomResponse.error.code !== "PGRST116") {
+            throw roomResponse.error;
+          }
+          if (
+            roomResponse.error?.code === "PGRST116" ||
+            !nextRoom ||
+            nextRoom.status === "closed"
+          ) {
+            returnToGameMain("게임이 끝나 메인으로 돌아왔어요.");
+            return;
+          }
+          if (membersResponse.error) throw membersResponse.error;
+          if (membershipResponse.error) throw membershipResponse.error;
+          if (!membershipResponse.data) {
+            returnToGameMain("게임이 끝나 메인으로 돌아왔어요.");
+            return;
+          }
+          setCurrentRoom(nextRoom);
+          const nextMembers = membersResponse.data ?? [];
+          setMembers(nextMembers);
+          if (!isActiveAccount(activeScope)) return;
+          await loadProfiles(
+            nextMembers.map((member) => member.user_id),
+            activeScope,
+          );
+        },
       );
     },
     [
