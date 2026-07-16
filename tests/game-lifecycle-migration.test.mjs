@@ -70,7 +70,7 @@ test("fold is accepted by storage and freezes public folded commitments", () => 
   assert.match(action, /case when action_name = 'raise' then next_stake else null end/i);
 });
 
-test("schema-2 public state has folding fields and live states are patched", () => {
+test("schema-2 public state has exact folding fields without hidden hands", () => {
   const builder = functionBody("private.build_public_round_state");
   for (const key of [
     "schema",
@@ -87,12 +87,18 @@ test("schema-2 public state has folding fields and live states are patched", () 
     assert.match(builder, new RegExp(`'${key}'`, "i"));
   }
   assert.doesNotMatch(builder, /['"]hands['"]/i);
-  assert.match(
-    sql,
-    /update public\.game_rooms[\s\S]*state ->> 'schema' = '2'[\s\S]*not \(state \? 'foldedPlayerIds'\)[\s\S]*not \(state \? 'foldedStakes'\)/i,
-  );
-  assert.match(sql, /'foldedPlayerIds'.*'\[\]'::jsonb/is);
-  assert.match(sql, /'foldedStakes'.*'\{\}'::jsonb/is);
+});
+
+test("rolling patch canonicalizes missing, null, wrong-type, and mismatched fold fields", () => {
+  const patch = sql.match(
+    /update public\.game_rooms[\s\S]*?(?=drop function private\.build_public_round_state)/i,
+  )?.[0];
+  assert.ok(patch, "missing rolling schema-2 state patch");
+  assert.match(patch, /'\{foldedPlayerIds\}',\s*'\[\]'::jsonb/is);
+  assert.match(patch, /'\{foldedStakes\}',\s*'\{\}'::jsonb/is);
+  assert.match(patch, /where state ->> 'schema' = '2';/i);
+  assert.doesNotMatch(patch, /coalesce\s*\(/i);
+  assert.doesNotMatch(patch, /state\s*->\s*'folded(?:PlayerIds|Stakes)'/i);
 });
 
 test("next round admission requires exact membership and fresh presence", () => {
@@ -188,7 +194,11 @@ test("close and leave are versioned, host-aware, and idempotent", () => {
 test("idle cleanup is skip-locked and scheduled once through pg_cron APIs", () => {
   assert.match(
     sql,
-    /create extension if not exists pg_cron with schema extensions/i,
+    /create extension if not exists pg_cron\s*;/i,
+  );
+  assert.doesNotMatch(
+    sql,
+    /create extension if not exists pg_cron\s+with schema/i,
   );
   const cleanup = functionBody("private.expire_idle_game_rooms");
   assert.match(cleanup, /status = 'playing'/i);

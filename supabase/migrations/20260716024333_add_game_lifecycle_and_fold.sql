@@ -18,25 +18,22 @@ alter table public.game_actions
     )
   );
 
--- Existing schema-2 rounds must be readable by the strict folding client as
--- soon as this migration commits. Existing values are retained if present.
+-- Rounds created before this deployment had no server-authoritative folding
+-- semantics. Canonicalize every schema-2 row so null, malformed, or mutually
+-- inconsistent legacy values cannot block the strict client or action RPC.
 update public.game_rooms
 set state = jsonb_set(
   jsonb_set(
     state,
     '{foldedPlayerIds}',
-    coalesce(state -> 'foldedPlayerIds', '[]'::jsonb),
+    '[]'::jsonb,
     true
   ),
   '{foldedStakes}',
-  coalesce(state -> 'foldedStakes', '{}'::jsonb),
+  '{}'::jsonb,
   true
 )
-where state ->> 'schema' = '2'
-  and (
-    not (state ? 'foldedPlayerIds')
-    or not (state ? 'foldedStakes')
-  );
+where state ->> 'schema' = '2';
 
 drop function private.build_public_round_state(
   uuid, bigint, uuid[], jsonb, numeric, numeric, uuid, uuid,
@@ -323,8 +320,7 @@ begin
 end;
 $function$;
 
-create schema if not exists extensions;
-create extension if not exists pg_cron with schema extensions;
+create extension if not exists pg_cron;
 
 do $cron_setup$
 declare
