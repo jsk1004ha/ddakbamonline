@@ -83,6 +83,13 @@ export default function OnlineRoomGame({
 }: Props) {
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
   const lifecycleGenerationRef = useRef(0);
+  const touchInFlightGenerationRef = useRef<number | null>(null);
+  const expireInFlightGenerationRef = useRef<number | null>(null);
+  const refreshInFlightRef = useRef<{
+    generation: number;
+    roomId: string;
+    promise: Promise<void>;
+  } | null>(null);
   const [raiseAmount, setRaiseAmount] = useState("");
   const [busy, setBusy] = useState(false);
   const [presenceNow, setPresenceNow] = useState(() => Date.now());
@@ -122,12 +129,34 @@ export default function OnlineRoomGame({
   );
 
   const refreshLatest = useCallback(
-    async (failureNotice: string) => {
-      try {
-        await onRefreshRoom(room.id);
-      } catch {
-        onNotice(failureNotice);
+    (
+      failureNotice: string,
+      generation = lifecycleGenerationRef.current,
+    ): Promise<void> => {
+      if (
+        refreshInFlightRef.current?.generation === generation &&
+        refreshInFlightRef.current.roomId === room.id
+      ) {
+        return refreshInFlightRef.current.promise;
       }
+
+      const promise = onRefreshRoom(room.id)
+        .catch(() => {
+          if (lifecycleGenerationRef.current === generation) {
+            onNotice(failureNotice);
+          }
+        })
+        .finally(() => {
+          if (refreshInFlightRef.current?.promise === promise) {
+            refreshInFlightRef.current = null;
+          }
+        });
+      refreshInFlightRef.current = {
+        generation,
+        roomId: room.id,
+        promise,
+      };
+      return promise;
     },
     [onNotice, onRefreshRoom, room.id],
   );
@@ -135,6 +164,8 @@ export default function OnlineRoomGame({
   const touchPresence = useCallback(
     async (generation: number) => {
       if (!supabase) return;
+      if (touchInFlightGenerationRef.current === generation) return;
+      touchInFlightGenerationRef.current = generation;
       try {
         const { error } = await supabase.rpc("touch_room_presence", {
           target_room: room.id,
@@ -143,6 +174,7 @@ export default function OnlineRoomGame({
         if (error) {
           await refreshLatest(
             "접속 상태를 갱신하지 못했어요. 최신 게임 상태를 다시 확인해 주세요.",
+            generation,
           );
           return;
         }
@@ -151,7 +183,12 @@ export default function OnlineRoomGame({
         if (lifecycleGenerationRef.current === generation) {
           await refreshLatest(
             "접속 상태를 갱신하지 못했어요. 최신 게임 상태를 다시 확인해 주세요.",
+            generation,
           );
+        }
+      } finally {
+        if (touchInFlightGenerationRef.current === generation) {
+          touchInFlightGenerationRef.current = null;
         }
       }
     },
@@ -161,6 +198,8 @@ export default function OnlineRoomGame({
   const expireIfIdle = useCallback(
     async (generation: number) => {
       if (!supabase) return;
+      if (expireInFlightGenerationRef.current === generation) return;
+      expireInFlightGenerationRef.current = generation;
       try {
         const { data, error } = await supabase.rpc("expire_idle_game_room", {
           target_room: room.id,
@@ -169,6 +208,7 @@ export default function OnlineRoomGame({
         if (error) {
           await refreshLatest(
             "게임 종료 상태를 확인하지 못했어요. 최신 게임 상태를 다시 확인해 주세요.",
+            generation,
           );
           return;
         }
@@ -184,7 +224,12 @@ export default function OnlineRoomGame({
         if (lifecycleGenerationRef.current === generation) {
           await refreshLatest(
             "게임 종료 상태를 확인하지 못했어요. 최신 게임 상태를 다시 확인해 주세요.",
+            generation,
           );
+        }
+      } finally {
+        if (expireInFlightGenerationRef.current === generation) {
+          expireInFlightGenerationRef.current = null;
         }
       }
     },
@@ -203,6 +248,7 @@ export default function OnlineRoomGame({
       expire();
       void refreshLatest(
         "게임 상태를 새로고침하지 못했어요. 잠시 후 다시 시도해 주세요.",
+        generation,
       );
     };
 

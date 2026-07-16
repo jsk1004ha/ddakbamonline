@@ -93,6 +93,7 @@ export default function AccountRoomPanel() {
     generation: 0,
   });
   const offlineMutationRef = useRef<OfflineMutation | null>(null);
+  const currentRoomIdRef = useRef<string | null>(null);
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [room, setRoom] = useState<Room | null>(null);
@@ -110,12 +111,18 @@ export default function AccountRoomPanel() {
   const [maxPlayers, setMaxPlayers] = useState(4);
   const [roomBusy, setRoomBusy] = useState(false);
   const [roomNotice, setRoomNotice] = useState("");
+  const roomId = room?.id ?? null;
+
+  const setCurrentRoom = useCallback((nextRoom: Room | null) => {
+    currentRoomIdRef.current = nextRoom?.id ?? null;
+    setRoom(nextRoom);
+  }, []);
 
   const returnToGameMain = useCallback((message?: string) => {
-    setRoom(null);
+    setCurrentRoom(null);
     setMembers([]);
     if (message) setRoomNotice(message);
-  }, []);
+  }, [setCurrentRoom]);
 
   const captureAccountScope = useCallback(
     (actorId: string): AccountScope => ({
@@ -179,6 +186,9 @@ export default function AccountRoomPanel() {
   const refreshRoom = useCallback(
     async (roomId: string, scope?: AccountScope) => {
       if (!supabase || !user) return;
+      const activeScope = scope ?? captureAccountScope(user.id);
+      if (!isActiveAccount(activeScope)) return;
+      const startingRoomId = currentRoomIdRef.current;
       const [roomResponse, membersResponse, membershipResponse] = await Promise.all([
         supabase.from("game_rooms").select("*").eq("id", roomId).single(),
         supabase
@@ -190,10 +200,14 @@ export default function AccountRoomPanel() {
           .from("room_members")
           .select("room_id")
           .eq("room_id", roomId)
-          .eq("user_id", user.id)
+          .eq("user_id", activeScope.actorId)
           .maybeSingle(),
       ]);
       if (scope && !isActiveAccount(scope)) return;
+      if (
+        !isActiveAccount(activeScope) ||
+        currentRoomIdRef.current !== startingRoomId
+      ) return;
       const nextRoom = roomResponse.data;
       if (roomResponse.error && roomResponse.error.code !== "PGRST116") {
         throw roomResponse.error;
@@ -212,12 +226,24 @@ export default function AccountRoomPanel() {
         returnToGameMain("게임이 끝나 메인으로 돌아왔어요.");
         return;
       }
-      setRoom(nextRoom);
+      setCurrentRoom(nextRoom);
       const nextMembers = membersResponse.data ?? [];
       setMembers(nextMembers);
-      await loadProfiles(nextMembers.map((member) => member.user_id), scope);
+      if (!isActiveAccount(activeScope)) return;
+      await loadProfiles(
+        nextMembers.map((member) => member.user_id),
+        activeScope,
+      );
     },
-    [isActiveAccount, loadProfiles, returnToGameMain, supabase, user],
+    [
+      captureAccountScope,
+      isActiveAccount,
+      loadProfiles,
+      returnToGameMain,
+      setCurrentRoom,
+      supabase,
+      user,
+    ],
   );
 
   const refreshAccount = useCallback(
@@ -361,7 +387,7 @@ export default function AccountRoomPanel() {
       setLedgerError("");
       setLedgerOpen(false);
       setProfile(null);
-      setRoom(null);
+      setCurrentRoom(null);
       setMembers([]);
       setNames({});
       setObligations([]);
@@ -385,7 +411,7 @@ export default function AccountRoomPanel() {
       active = false;
       data.subscription.unsubscribe();
     };
-  }, [supabase]);
+  }, [setCurrentRoom, supabase]);
 
   useEffect(() => {
     if (!user) return;
@@ -403,23 +429,27 @@ export default function AccountRoomPanel() {
     if (!supabase || !user) return;
     const scope = captureAccountScope(user.id);
     if (!isActiveAccount(scope)) return;
+    const isCurrentRoomChannel = () =>
+      isActiveAccount(scope) && currentRoomIdRef.current === roomId;
     const channel = supabase
-      .channel(`account-room-${user.id}-${room?.id ?? "none"}`)
+      .channel(`account-room-${user.id}-${roomId ?? "none"}`)
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "hit_obligations" },
         () => {
+          if (!isCurrentRoomChannel()) return;
           void refreshLedger(scope).catch(() => {
-            if (isActiveAccount(scope)) {
+            if (isCurrentRoomChannel()) {
               setLedgerError("최신 장부를 불러오지 못했어요. 잠시 후 다시 시도해 주세요.");
             }
           });
         },
       );
-    if (room) {
+    if (roomId) {
       const refreshActiveRoom = () => {
-        void refreshRoom(room.id, scope).catch(() => {
-          if (isActiveAccount(scope)) {
+        if (!isCurrentRoomChannel()) return;
+        void refreshRoom(roomId, scope).catch(() => {
+          if (isCurrentRoomChannel()) {
             setRoomNotice("게임 상태를 새로고침하지 못했어요. 잠시 후 다시 시도해 주세요.");
           }
         });
@@ -427,12 +457,14 @@ export default function AccountRoomPanel() {
       channel
         .on(
           "postgres_changes",
-          { event: "*", schema: "public", table: "room_members", filter: `room_id=eq.${room.id}` },
+          { event: "*", schema: "public", table: "room_members", filter: `room_id=eq.${roomId}` },
           (payload) => {
+            if (!isCurrentRoomChannel()) return;
             if (
               payload.eventType === "DELETE" &&
               payload.old.user_id === user.id
             ) {
+              if (!isCurrentRoomChannel()) return;
               returnToGameMain("게임이 끝나 메인으로 돌아왔어요.");
               return;
             }
@@ -441,12 +473,14 @@ export default function AccountRoomPanel() {
         )
         .on(
           "postgres_changes",
-          { event: "*", schema: "public", table: "game_rooms", filter: `id=eq.${room.id}` },
+          { event: "*", schema: "public", table: "game_rooms", filter: `id=eq.${roomId}` },
           (payload) => {
+            if (!isCurrentRoomChannel()) return;
             if (
               payload.eventType === "DELETE" ||
               payload.new.status === "closed"
             ) {
+              if (!isCurrentRoomChannel()) return;
               returnToGameMain("게임이 끝나 메인으로 돌아왔어요.");
               return;
             }
@@ -464,7 +498,7 @@ export default function AccountRoomPanel() {
     refreshLedger,
     refreshRoom,
     returnToGameMain,
-    room,
+    roomId,
     supabase,
     user,
   ]);

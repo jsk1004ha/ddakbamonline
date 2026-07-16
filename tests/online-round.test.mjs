@@ -606,7 +606,10 @@ test("recovers closed, missing, and membership-deleted rooms to the game main", 
     accountRoomSource,
     /const returnToGameMain = useCallback\(\(message\?: string\)/,
   );
-  assert.match(accountRoomSource, /setRoom\(null\);[\s\S]*?setMembers\(\[\]\);/);
+  assert.match(
+    accountRoomSource,
+    /setCurrentRoom\(null\);[\s\S]*?setMembers\(\[\]\);/,
+  );
   assert.match(accountRoomSource, /PGRST116/);
   assert.match(accountRoomSource, /!nextRoom/);
   assert.match(accountRoomSource, /nextRoom\.status === "closed"/);
@@ -688,4 +691,74 @@ test("dedicated game CSS keeps exact large-card responsive dimensions", () => {
   assert.match(globalStylesSource, /\.onlineGame__actionDock\s*\{[\s\S]*?position:\s*sticky;/);
   assert.match(globalStylesSource, /min-height:\s*44px;/);
   assert.match(globalStylesSource, /overflow-x:\s*hidden;/);
+});
+
+test("room refreshes are account scoped and stale room work cannot mutate state", () => {
+  assert.match(
+    accountRoomSource,
+    /const currentRoomIdRef = useRef<string \| null>\(null\);/,
+  );
+  assert.match(
+    accountRoomSource,
+    /const setCurrentRoom = useCallback\([\s\S]*?currentRoomIdRef\.current = nextRoom\?\.id \?\? null;[\s\S]*?setRoom\(nextRoom\);/,
+  );
+  const refreshRoomSource = accountRoomSource.match(
+    /const refreshRoom = useCallback\([\s\S]*?\r?\n  \);\r?\n\r?\n  const refreshAccount/,
+  )?.[0];
+  assert.ok(refreshRoomSource);
+  assert.match(refreshRoomSource, /const activeScope = scope \?\? captureAccountScope\(user\.id\);/);
+  assert.match(refreshRoomSource, /if \(!isActiveAccount\(activeScope\)\) return;/);
+  assert.match(refreshRoomSource, /const startingRoomId = currentRoomIdRef\.current;/);
+  assert.match(
+    refreshRoomSource,
+    /await Promise\.all[\s\S]*?if \(\s*!isActiveAccount\(activeScope\) \|\|\s*currentRoomIdRef\.current !== startingRoomId\s*\) return;/,
+  );
+  assert.doesNotMatch(refreshRoomSource, /loadProfiles\([^)]*, scope\)/);
+  assert.match(refreshRoomSource, /loadProfiles\([\s\S]*?activeScope/);
+});
+
+test("realtime room subscriptions use stable IDs and reject late channel events", () => {
+  assert.match(accountRoomSource, /const roomId = room\?\.id \?\? null;/);
+  assert.match(
+    accountRoomSource,
+    /const isCurrentRoomChannel = \(\) =>\s*isActiveAccount\(scope\) && currentRoomIdRef\.current === roomId;/,
+  );
+  const subscriptionSource = accountRoomSource.match(
+    /useEffect\(\(\) => \{\n    if \(!supabase \|\| !user\) return;[\s\S]*?\n  \}, \[[\s\S]*?\n  \]\);/,
+  )?.[0];
+  assert.ok(subscriptionSource);
+  assert.match(subscriptionSource, /if \(!isCurrentRoomChannel\(\)\) return;/);
+  assert.match(
+    subscriptionSource,
+    /if \(!isCurrentRoomChannel\(\)\) return;\s*returnToGameMain\(/,
+  );
+  const dependencies = subscriptionSource.slice(subscriptionSource.lastIndexOf("}, ["));
+  assert.match(dependencies, /\broomId\b/);
+  assert.doesNotMatch(dependencies, /\n    room,/);
+});
+
+test("lifecycle polling prevents overlapping RPCs and coalesces room refreshes", () => {
+  assert.match(onlineGameSource, /const touchInFlightGenerationRef = useRef<number \| null>\(null\);/);
+  assert.match(onlineGameSource, /const expireInFlightGenerationRef = useRef<number \| null>\(null\);/);
+  assert.match(onlineGameSource, /const refreshInFlightRef = useRef<\{[\s\S]*?promise: Promise<void>;/);
+  assert.match(
+    onlineGameSource,
+    /if \(touchInFlightGenerationRef\.current === generation\) return;/,
+  );
+  assert.match(
+    onlineGameSource,
+    /if \(expireInFlightGenerationRef\.current === generation\) return;/,
+  );
+  assert.match(
+    onlineGameSource,
+    /refreshInFlightRef\.current\?\.generation === generation[\s\S]*?return refreshInFlightRef\.current\.promise;/,
+  );
+  assert.match(
+    onlineGameSource,
+    /finally \{[\s\S]*?touchInFlightGenerationRef\.current === generation[\s\S]*?touchInFlightGenerationRef\.current = null;/,
+  );
+  assert.match(
+    onlineGameSource,
+    /finally \{[\s\S]*?expireInFlightGenerationRef\.current === generation[\s\S]*?expireInFlightGenerationRef\.current = null;/,
+  );
 });
