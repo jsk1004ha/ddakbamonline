@@ -23,23 +23,82 @@ const key = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 const qaPassword = process.env.QA_PASSWORD;
 const internalDomain = "accounts.ddakbamonline.com";
+const REQUEST_TIMEOUT_MS = 30_000;
+const MAX_BETTING_ACTIONS = 16;
+const MAX_AUTH_USER_PAGES = 100;
+const AUTH_USERS_PER_PAGE = 1_000;
+const PRESENCE_BACKDATE_MS = 2 * 60_000;
+const IDLE_BACKDATE_MS = 5 * 60_000;
+const qaNamespace = crypto.randomUUID().replaceAll("-", "");
+const qaSuffix = qaNamespace.slice(0, 5);
+const hostAccountId = `qa_host_${qaSuffix}`;
+const guestAccountId = `qa_guest_${qaSuffix}`;
+const guestTwoAccountId = `qa_guest_two_${qaSuffix}`;
+const guestThreeAccountId = `qa_guest_three_${qaSuffix}`;
+const observerAccountId = `qa_watch_${qaSuffix}`;
+const qaAccountIds = [
+  hostAccountId,
+  guestAccountId,
+  guestTwoAccountId,
+  guestThreeAccountId,
+  observerAccountId,
+];
+const qaEmails = qaAccountIds.map(
+  (accountId) => `${accountId}@${internalDomain}`,
+);
+const qaEmailSet = new Set(qaEmails);
+const qaRoomCodes = [0, 1, 2].map((index) =>
+  `Q${qaNamespace.slice(5 + index * 5, 10 + index * 5)}`
+    .toUpperCase()
+    .replace(/[01]/g, "A"),
+);
+const qaRoomCodeSet = new Set(qaRoomCodes);
+assert.equal(qaRoomCodeSet.size, qaRoomCodes.length);
+let qaRoomCodeIndex = 0;
 let offlineRpcResponseBody = null;
+
+async function fetchWithTimeout(input, init = {}) {
+  const abortController = new AbortController();
+  const upstreamSignal =
+    init.signal ?? (input instanceof Request ? input.signal : null);
+  const forwardAbort = () => abortController.abort(upstreamSignal.reason);
+  if (upstreamSignal?.aborted) {
+    forwardAbort();
+  } else {
+    upstreamSignal?.addEventListener("abort", forwardAbort, { once: true });
+  }
+  const timeoutId = setTimeout(() => {
+    abortController.abort(
+      new DOMException(
+        `Supabase request exceeded ${REQUEST_TIMEOUT_MS}ms`,
+        "AbortError",
+      ),
+    );
+  }, REQUEST_TIMEOUT_MS);
+
+  try {
+    return await fetch(input, { ...init, signal: abortController.signal });
+  } finally {
+    clearTimeout(timeoutId);
+    upstreamSignal?.removeEventListener("abort", forwardAbort);
+  }
+}
+
+async function fetchWithOfflineCapture(input, init) {
+  const response = await fetchWithTimeout(input, init);
+  if (String(input).includes("/rpc/add_offline_hit_obligation")) {
+    offlineRpcResponseBody = await response.clone().text();
+  }
+  return response;
+}
 
 function client({ captureOfflineRpc = false } = {}) {
   const options = {
     auth: { autoRefreshToken: false, persistSession: false },
+    global: {
+      fetch: captureOfflineRpc ? fetchWithOfflineCapture : fetchWithTimeout,
+    },
   };
-  if (captureOfflineRpc) {
-    options.global = {
-      fetch: async (input, init) => {
-        const response = await fetch(input, init);
-        if (String(input).includes("/rpc/add_offline_hit_obligation")) {
-          offlineRpcResponseBody = await response.clone().text();
-        }
-        return response;
-      },
-    };
-  }
   return createClient(url, key, options);
 }
 
@@ -50,6 +109,7 @@ const guestThree = client();
 const observer = client();
 const admin = createClient(url, serviceRoleKey, {
   auth: { autoRefreshToken: false, persistSession: false },
+  global: { fetch: fetchWithTimeout },
 });
 const createdUserIds = [];
 const createdRoomIds = [];
@@ -59,11 +119,13 @@ const offlineObligationIds = [];
 const participantClients = new Map();
 
 async function provisionQaUser(accountId) {
+  const email = `${accountId}@${internalDomain}`;
+  assert.ok(qaEmailSet.has(email), "QA user email was not pre-registered");
   const { data, error } = await admin.auth.admin.createUser({
-    email: `${accountId}@${internalDomain}`,
+    email,
     password: qaPassword,
     email_confirm: true,
-    user_metadata: { display_name: accountId },
+    user_metadata: { account_id: accountId, display_name: accountId },
   });
   assert.ifError(error);
   assert.ok(data.user?.id);
@@ -74,6 +136,24 @@ async function provisionQaUser(accountId) {
 function trackUnique(ids, id) {
   if (id && !ids.includes(id)) ids.push(id);
   return id;
+}
+
+async function discoverQaNamespaceUsers() {
+  const namespaceUsers = [];
+  let page = 1;
+  for (let pageCount = 0; pageCount < MAX_AUTH_USER_PAGES; pageCount += 1) {
+    const { data, error } = await admin.auth.admin.listUsers({
+      page,
+      perPage: AUTH_USERS_PER_PAGE,
+    });
+    assert.ifError(error);
+    for (const user of data.users) {
+      if (qaEmailSet.has(user.email)) namespaceUsers.push(user);
+    }
+    if (data.nextPage === null) return namespaceUsers;
+    page = data.nextPage;
+  }
+  assert.fail(`QA Auth namespace exceeds ${MAX_AUTH_USER_PAGES} pages`);
 }
 
 function trackResultRows(rows) {
@@ -91,6 +171,32 @@ function trackObligationRows(rows) {
 }
 
 async function discoverCleanupTargets() {
+  const namespaceUsers = await discoverQaNamespaceUsers();
+  for (const user of namespaceUsers) {
+    trackUnique(createdUserIds, user.id);
+  }
+
+  if (createdUserIds.length > 0) {
+    const { data: namespaceRooms, error: namespaceRoomsError } = await admin
+      .from("game_rooms")
+      .select("id, code")
+      .in("code", qaRoomCodes)
+      .in("host_id", createdUserIds);
+    assert.ifError(namespaceRoomsError);
+    for (const room of namespaceRooms) {
+      assert.ok(qaRoomCodeSet.has(room.code));
+      trackUnique(createdRoomIds, room.id);
+    }
+
+    const { data: namespaceObligations, error: namespaceObligationsError } =
+      await admin
+        .from("hit_obligations")
+        .select("id")
+        .in("created_by", createdUserIds);
+    assert.ifError(namespaceObligationsError);
+    trackObligationRows(namespaceObligations);
+  }
+
   if (createdRoomIds.length > 0) {
     const { data: results, error: resultError } = await admin
       .from("game_results")
@@ -119,14 +225,14 @@ async function discoverCleanupTargets() {
 }
 
 async function assertNoQaResidue() {
-  if (createdUserIds.length > 0) {
-    const { data: profiles, error: profileError } = await admin
-      .from("profiles")
-      .select("id")
-      .in("id", createdUserIds);
-    assert.ifError(profileError);
-    assert.equal(profiles.length, 0, "disposable profiles remain");
+  const { data: profiles, error: profileError } = await admin
+    .from("profiles")
+    .select("id, account_id")
+    .in("account_id", qaAccountIds);
+  assert.ifError(profileError);
+  assert.equal(profiles.length, 0, "QA namespace profiles remain");
 
+  if (createdUserIds.length > 0) {
     const authLookups = await Promise.all(
       createdUserIds.map((userId) => admin.auth.admin.getUserById(userId)),
     );
@@ -139,14 +245,12 @@ async function assertNoQaResidue() {
     }
   }
 
-  if (createdRoomIds.length > 0) {
-    const { data: rooms, error: roomError } = await admin
-      .from("game_rooms")
-      .select("id")
-      .in("id", createdRoomIds);
-    assert.ifError(roomError);
-    assert.equal(rooms.length, 0, "disposable rooms remain");
-  }
+  const { data: rooms, error: roomError } = await admin
+    .from("game_rooms")
+    .select("id, code")
+    .in("code", qaRoomCodes);
+  assert.ifError(roomError);
+  assert.equal(rooms.length, 0, "QA namespace rooms remain");
 
   if (resultIds.length > 0) {
     const { data: results, error: resultError } = await admin
@@ -165,6 +269,9 @@ async function assertNoQaResidue() {
     assert.ifError(obligationError);
     assert.equal(obligations.length, 0, "disposable obligations remain");
   }
+
+  const namespaceUsers = await discoverQaNamespaceUsers();
+  assert.equal(namespaceUsers.length, 0, "QA namespace Auth users remain");
 }
 
 async function cleanupQaData() {
@@ -222,14 +329,21 @@ async function cleanupQaData() {
     },
   ];
 
-  for (const [index, userId] of [...createdUserIds].reverse().entries()) {
-    cleanupSteps.push({
-      label: `disposable auth user ${index + 1}`,
-      run: async () => {
-        assert.ifError((await admin.auth.admin.deleteUser(userId)).error);
-      },
-    });
-  }
+  cleanupSteps.push({
+    label: "disposable auth users",
+    run: async () => {
+      const userIds = [...createdUserIds].reverse();
+      const deleteResults = await Promise.all(
+        userIds.map((userId) => admin.auth.admin.deleteUser(userId)),
+      );
+      const deleteErrors = deleteResults
+        .map(({ error }) => error)
+        .filter(Boolean);
+      if (deleteErrors.length > 0) {
+        throw new AggregateError(deleteErrors, "failed to delete QA Auth users");
+      }
+    },
+  });
 
   cleanupSteps.push({
     label: "zero residue verification",
@@ -328,9 +442,10 @@ async function readMemberCount(roomId) {
 }
 
 function nextRoomCode() {
-  return `Q${crypto.randomUUID().replaceAll("-", "").slice(0, 5)}`
-    .toUpperCase()
-    .replace(/[01]/g, "A");
+  const roomCode = qaRoomCodes[qaRoomCodeIndex];
+  assert.ok(roomCode, "QA room code registry exhausted");
+  qaRoomCodeIndex += 1;
+  return roomCode;
 }
 
 async function createReadyRoom(players) {
@@ -454,7 +569,14 @@ async function callCurrentTurn(roomId, room) {
 
 async function playRoundToShowdown(roomId) {
   let room = await readRoom(roomId);
+  let bettingActionCount = 0;
   while (room.state.phase === "betting") {
+    if (bettingActionCount >= MAX_BETTING_ACTIONS) {
+      assert.fail(
+        `round exceeded ${MAX_BETTING_ACTIONS} betting actions`,
+      );
+    }
+    bettingActionCount += 1;
     room = await callCurrentTurn(roomId, room);
   }
   assert.equal(room.state.phase, "showdown");
@@ -524,12 +646,6 @@ async function readRoundResults(roundToken) {
 
 let qaError = null;
 try {
-const qaSuffix = crypto.randomUUID().replaceAll("-", "").slice(0, 10);
-const hostAccountId = `qa_host_${qaSuffix}`;
-const guestAccountId = `qa_guest_${qaSuffix}`;
-const guestTwoAccountId = `qa_guest_two_${qaSuffix}`;
-const guestThreeAccountId = `qa_guest_three_${qaSuffix}`;
-const observerAccountId = `qa_watch_${qaSuffix}`;
 const provisionedHostId = await provisionQaUser(hostAccountId);
 const provisionedGuestId = await provisionQaUser(guestAccountId);
 const provisionedGuestTwoId = await provisionQaUser(guestTwoAccountId);
@@ -934,7 +1050,7 @@ expectError(
 await assertRoomUnchanged(roomId, observerRoomBefore, "observer lifecycle");
 
 await touchParticipants(roomId, fourPlayers);
-const staleLastSeenAt = new Date(Date.now() - 61_000).toISOString();
+const staleLastSeenAt = new Date(Date.now() - PRESENCE_BACKDATE_MS).toISOString();
 const { data: stalePresenceRows, error: stalePresenceError } = await admin
   .from("room_members")
   .update({ last_seen_at: staleLastSeenAt })
@@ -943,7 +1059,10 @@ const { data: stalePresenceRows, error: stalePresenceError } = await admin
   .select("last_seen_at");
 assert.ifError(stalePresenceError);
 assert.equal(stalePresenceRows.length, 1);
-assert.ok(Date.parse(stalePresenceRows[0].last_seen_at) < Date.now() - 60_000);
+assert.ok(
+  Date.parse(stalePresenceRows[0].last_seen_at) <
+    Date.now() - PRESENCE_BACKDATE_MS,
+);
 expectErrorMessage(
   await host.rpc("start_game_round", {
     target_room: roomId,
@@ -1122,7 +1241,7 @@ const preservedObligationIds = preservedObligations
 assert.deepEqual(preservedObligationIds, leaveObligationIds);
 
 const idleRoom = await createActiveRoom(twoPlayers);
-const idleBackdate = new Date(Date.now() - 121_000).toISOString();
+const idleBackdate = new Date(Date.now() - IDLE_BACKDATE_MS).toISOString();
 const { data: idleBackdateRows, error: idleBackdateError } = await admin
   .from("game_rooms")
   .update({ updated_at: idleBackdate })
@@ -1130,7 +1249,10 @@ const { data: idleBackdateRows, error: idleBackdateError } = await admin
   .select("updated_at");
 assert.ifError(idleBackdateError);
 assert.equal(idleBackdateRows.length, 1);
-assert.ok(Date.parse(idleBackdateRows[0].updated_at) < Date.now() - 120_000);
+assert.ok(
+  Date.parse(idleBackdateRows[0].updated_at) <
+    Date.now() - IDLE_BACKDATE_MS,
+);
 const [hostExpiry, guestExpiry] = await Promise.all([
   host.rpc("expire_idle_game_room", { target_room: idleRoom.id }),
   guest.rpc("expire_idle_game_room", { target_room: idleRoom.id }),

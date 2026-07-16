@@ -15,9 +15,91 @@ test("live authority QA provisions disposable users and always cleans them up", 
   assert.match(script, /catch \(error\) \{[\s\S]*qaError = error/);
   assert.match(script, /catch \(error\) \{[\s\S]*cleanupError = error/);
   assert.match(script, /throwQaOrCleanupError\(qaError, cleanupError\)/);
-  assert.doesNotMatch(script, /finally\s*\{[\s\S]*cleanupQaData\(\)/);
+  assert.doesNotMatch(script, /finally\s*\{[^}]*cleanupQaData\(\)/);
   assert.match(script, /auth\.admin\.deleteUser/);
   assert.doesNotMatch(script, /"QA_HOST_ID"|"QA_GUEST_ID"/);
+});
+
+test("QA namespace identifiers are registered before creates and recover response-lost rows", () => {
+  const namespaceIndex = script.indexOf("const qaNamespace");
+  const emailsIndex = script.indexOf("const qaEmails");
+  const roomCodesIndex = script.indexOf("const qaRoomCodes");
+  const firstRemoteCreate = Math.min(
+    script.indexOf("auth.admin.createUser"),
+    script.indexOf('.from("game_rooms")\n    .insert'),
+  );
+  assert.ok(namespaceIndex >= 0);
+  assert.ok(emailsIndex > namespaceIndex);
+  assert.ok(roomCodesIndex > emailsIndex);
+  assert.ok(roomCodesIndex < firstRemoteCreate);
+  assert.match(script, /const qaEmailSet = new Set\(qaEmails\)/);
+  assert.match(script, /const qaRoomCodeSet = new Set\(qaRoomCodes\)/);
+  assert.match(
+    script,
+    /async function discoverQaNamespaceUsers\(\)[\s\S]*?auth\.admin\.listUsers\(/,
+  );
+  assert.match(script, /pageCount < MAX_AUTH_USER_PAGES/);
+  assert.match(script, /qaEmailSet\.has\(user\.email\)/);
+  assert.match(
+    script,
+    /async function discoverCleanupTargets\(\)[\s\S]*?discoverQaNamespaceUsers\(\)[\s\S]*?trackUnique\(createdUserIds,[\s\S]*?\.from\("game_rooms"\)[\s\S]*?\.in\("code", qaRoomCodes\)[\s\S]*?trackUnique\(createdRoomIds,/,
+  );
+  assert.match(
+    script,
+    /label: "disposable auth users"[\s\S]*?\[\.\.\.createdUserIds\]\.reverse\(\)[\s\S]*?auth\.admin\.deleteUser/,
+  );
+  assert.match(
+    script,
+    /async function assertNoQaResidue\(\)[\s\S]*?\.from\("profiles"\)[\s\S]*?\.in\("account_id", qaAccountIds\)[\s\S]*?\.from\("game_rooms"\)[\s\S]*?\.in\("code", qaRoomCodes\)[\s\S]*?discoverQaNamespaceUsers\(\)[\s\S]*?assert\.equal\(namespaceUsers\.length, 0/,
+  );
+});
+
+test("every Supabase client shares an aborting fetch timeout without dropping signals", () => {
+  assert.match(script, /const REQUEST_TIMEOUT_MS = 30_000/);
+  assert.match(script, /async function fetchWithTimeout\(input, init = \{\}\)/);
+  assert.match(
+    script,
+    /const upstreamSignal =\s*init\.signal \?\?\s*\(input instanceof Request \? input\.signal : null\)/,
+  );
+  assert.match(script, /const abortController = new AbortController\(\)/);
+  assert.match(script, /upstreamSignal\?\.addEventListener\("abort", forwardAbort, \{ once: true \}\)/);
+  assert.match(script, /setTimeout\([\s\S]*?abortController\.abort\([\s\S]*?REQUEST_TIMEOUT_MS/);
+  assert.match(
+    script,
+    /fetch\(input, \{ \.\.\.init, signal: abortController\.signal \}\)/,
+  );
+  assert.match(script, /finally \{[\s\S]*?clearTimeout\(timeoutId\)[\s\S]*?removeEventListener\("abort", forwardAbort\)/);
+  assert.match(
+    script,
+    /async function fetchWithOfflineCapture[\s\S]*?fetchWithTimeout\(input, init\)/,
+  );
+  assert.match(
+    script,
+    /fetch: captureOfflineRpc \? fetchWithOfflineCapture : fetchWithTimeout/,
+  );
+  assert.match(
+    script,
+    /const admin = createClient\([\s\S]*?global: \{ fetch: fetchWithTimeout \}/,
+  );
+});
+
+test("showdown driving and namespace pagination fail explicitly at finite caps", () => {
+  assert.match(script, /const MAX_BETTING_ACTIONS = 16/);
+  assert.match(script, /const MAX_AUTH_USER_PAGES = 100/);
+  const showdown = script.match(
+    /async function playRoundToShowdown\(roomId\)\s*\{([\s\S]*?)\n\}/,
+  )?.[1];
+  assert.ok(showdown, "expected playRoundToShowdown body");
+  assert.match(showdown, /let bettingActionCount = 0/);
+  assert.match(
+    showdown,
+    /if \(bettingActionCount >= MAX_BETTING_ACTIONS\) \{[\s\S]*?assert\.fail\(/,
+  );
+  assert.match(showdown, /bettingActionCount \+= 1/);
+  assert.match(
+    script,
+    /assert\.fail\(`QA Auth namespace exceeds \$\{MAX_AUTH_USER_PAGES\} pages`\)/,
+  );
 });
 
 test("live authority QA provisions four participant clients and maps every actor", () => {
@@ -104,6 +186,15 @@ test("live QA rejects an offline next round and restores it after presence", () 
     /await touchParticipants\(roomId, fourPlayers\);\s*const staleLastSeenAt/,
     "all four participants must be fresh immediately before one is backdated",
   );
+  assert.match(script, /const PRESENCE_BACKDATE_MS = 2 \* 60_000/);
+  assert.match(
+    script,
+    /const staleLastSeenAt = new Date\(Date\.now\(\) - PRESENCE_BACKDATE_MS\)/,
+  );
+  assert.match(
+    script,
+    /Date\.parse\(stalePresenceRows\[0\]\.last_seen_at\) <\s*Date\.now\(\) - PRESENCE_BACKDATE_MS/,
+  );
 });
 
 test("authenticated observer cannot mutate another room lifecycle", () => {
@@ -164,6 +255,15 @@ test("separate active rooms prove leave closure and concurrent idle expiry", () 
   assert.match(script, /assert\.equal\(closedIdleRoom\.status,\s*"closed"\)/);
   assert.match(script, /assert\.equal\(idleMemberCount,\s*0\)/);
   assert.doesNotMatch(script, /serverIdleCleanupObserved/);
+  assert.match(script, /const IDLE_BACKDATE_MS = 5 \* 60_000/);
+  assert.match(
+    script,
+    /const idleBackdate = new Date\(Date\.now\(\) - IDLE_BACKDATE_MS\)/,
+  );
+  assert.match(
+    script,
+    /Date\.parse\(idleBackdateRows\[0\]\.updated_at\) <\s*Date\.now\(\) - IDLE_BACKDATE_MS/,
+  );
 });
 
 test("cleanup tracks every generated entity, preserves dependency order, and proves zero residue", () => {
@@ -189,7 +289,7 @@ test("cleanup tracks every generated entity, preserves dependency order, and pro
   assert.match(cleanup, /assertNoQaResidue\(\)/);
 
   assert.match(script, /async function assertNoQaResidue\(\)/);
-  assert.match(script, /\.from\("profiles"\)[\s\S]*?\.in\("id",\s*createdUserIds\)/);
+  assert.match(script, /\.from\("profiles"\)[\s\S]*?\.in\("account_id",\s*qaAccountIds\)/);
   assert.match(script, /auth\.admin\.getUserById/);
   assert.match(script, /assert\.equal\(lookup\.error\.name,\s*"AuthApiError"\)/);
   assert.match(script, /assert\.equal\(lookup\.error\.status,\s*404\)/);
@@ -333,7 +433,7 @@ test("offline IDs are deleted first and the summary exposes only safe checks", (
   assert.match(cleanup, /runCleanupSteps\(cleanupSteps\)/);
   assert.match(
     cleanup,
-    /\[\.\.\.createdUserIds\]\.reverse\(\)[\s\S]*cleanupSteps\.push[\s\S]*auth\.admin\.deleteUser/,
+    /label: "disposable auth users"[\s\S]*?\[\.\.\.createdUserIds\]\.reverse\(\)[\s\S]*?auth\.admin\.deleteUser/,
   );
   const cleanupLabels = [...cleanup.matchAll(/label:\s*[`"]([^`"]+)[`"]?/g)].map(
     (match) => match[1],
