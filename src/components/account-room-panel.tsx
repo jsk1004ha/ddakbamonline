@@ -111,6 +111,12 @@ export default function AccountRoomPanel() {
   const [roomBusy, setRoomBusy] = useState(false);
   const [roomNotice, setRoomNotice] = useState("");
 
+  const returnToGameMain = useCallback((message?: string) => {
+    setRoom(null);
+    setMembers([]);
+    if (message) setRoomNotice(message);
+  }, []);
+
   const captureAccountScope = useCallback(
     (actorId: string): AccountScope => ({
       actorId,
@@ -172,24 +178,46 @@ export default function AccountRoomPanel() {
 
   const refreshRoom = useCallback(
     async (roomId: string, scope?: AccountScope) => {
-      if (!supabase) return;
-      const [roomResponse, membersResponse] = await Promise.all([
-        supabase.from("game_rooms").select("*").eq("id", roomId).maybeSingle(),
+      if (!supabase || !user) return;
+      const [roomResponse, membersResponse, membershipResponse] = await Promise.all([
+        supabase.from("game_rooms").select("*").eq("id", roomId).single(),
         supabase
           .from("room_members")
           .select("*")
           .eq("room_id", roomId)
           .order("seat"),
+        supabase
+          .from("room_members")
+          .select("room_id")
+          .eq("room_id", roomId)
+          .eq("user_id", user.id)
+          .maybeSingle(),
       ]);
       if (scope && !isActiveAccount(scope)) return;
-      if (roomResponse.error) throw roomResponse.error;
+      const nextRoom = roomResponse.data;
+      if (roomResponse.error && roomResponse.error.code !== "PGRST116") {
+        throw roomResponse.error;
+      }
+      if (
+        roomResponse.error?.code === "PGRST116" ||
+        !nextRoom ||
+        nextRoom.status === "closed"
+      ) {
+        returnToGameMain("게임이 끝나 메인으로 돌아왔어요.");
+        return;
+      }
       if (membersResponse.error) throw membersResponse.error;
-      setRoom(roomResponse.data);
+      if (membershipResponse.error) throw membershipResponse.error;
+      if (!membershipResponse.data) {
+        returnToGameMain("게임이 끝나 메인으로 돌아왔어요.");
+        return;
+      }
+      setRoom(nextRoom);
       const nextMembers = membersResponse.data ?? [];
       setMembers(nextMembers);
       await loadProfiles(nextMembers.map((member) => member.user_id), scope);
     },
-    [isActiveAccount, loadProfiles, supabase],
+    [isActiveAccount, loadProfiles, returnToGameMain, supabase, user],
   );
 
   const refreshAccount = useCallback(
@@ -223,11 +251,10 @@ export default function AccountRoomPanel() {
       if (membershipResponse.data) {
         await refreshRoom(membershipResponse.data.room_id, scope);
       } else {
-        setRoom(null);
-        setMembers([]);
+        returnToGameMain();
       }
     },
-    [isActiveAccount, refreshLedger, refreshRoom, supabase],
+    [isActiveAccount, refreshLedger, refreshRoom, returnToGameMain, supabase],
   );
 
   async function searchProfilesByName(
@@ -381,19 +408,50 @@ export default function AccountRoomPanel() {
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "hit_obligations" },
-        () => void refreshLedger(scope),
+        () => {
+          void refreshLedger(scope).catch(() => {
+            if (isActiveAccount(scope)) {
+              setLedgerError("최신 장부를 불러오지 못했어요. 잠시 후 다시 시도해 주세요.");
+            }
+          });
+        },
       );
     if (room) {
+      const refreshActiveRoom = () => {
+        void refreshRoom(room.id, scope).catch(() => {
+          if (isActiveAccount(scope)) {
+            setRoomNotice("게임 상태를 새로고침하지 못했어요. 잠시 후 다시 시도해 주세요.");
+          }
+        });
+      };
       channel
         .on(
           "postgres_changes",
           { event: "*", schema: "public", table: "room_members", filter: `room_id=eq.${room.id}` },
-          () => void refreshRoom(room.id, scope),
+          (payload) => {
+            if (
+              payload.eventType === "DELETE" &&
+              payload.old.user_id === user.id
+            ) {
+              returnToGameMain("게임이 끝나 메인으로 돌아왔어요.");
+              return;
+            }
+            refreshActiveRoom();
+          },
         )
         .on(
           "postgres_changes",
           { event: "*", schema: "public", table: "game_rooms", filter: `id=eq.${room.id}` },
-          () => void refreshRoom(room.id, scope),
+          (payload) => {
+            if (
+              payload.eventType === "DELETE" ||
+              payload.new.status === "closed"
+            ) {
+              returnToGameMain("게임이 끝나 메인으로 돌아왔어요.");
+              return;
+            }
+            refreshActiveRoom();
+          },
         );
     }
     channel.subscribe();
@@ -405,6 +463,7 @@ export default function AccountRoomPanel() {
     isActiveAccount,
     refreshLedger,
     refreshRoom,
+    returnToGameMain,
     room,
     supabase,
     user,
@@ -534,20 +593,31 @@ export default function AccountRoomPanel() {
   async function leaveRoom() {
     if (!supabase || !user || !room) return;
     setRoomBusy(true);
-    const response = room.host_id === user.id
-      ? await supabase.from("game_rooms").delete().eq("id", room.id)
-      : await supabase
-          .from("room_members")
-          .delete()
-          .eq("room_id", room.id)
-          .eq("user_id", user.id);
-    if (response.error) setRoomNotice(errorMessage(response.error));
-    else {
-      setRoom(null);
-      setMembers([]);
-      setRoomNotice(room.host_id === user.id ? "방을 닫았어요." : "방에서 나왔어요.");
+    try {
+      const { error } = await supabase.rpc("leave_game_room", {
+        target_room: room.id,
+        expected_version: room.version,
+      });
+      if (error) {
+        setRoomNotice("방을 나가지 못했어요. 최신 상태를 다시 확인해 주세요.");
+        await refreshRoom(room.id);
+        return;
+      }
+      returnToGameMain(
+        room.status === "waiting"
+          ? "방에서 나왔어요."
+          : "게임을 끝내고 메인으로 돌아왔어요.",
+      );
+    } catch {
+      setRoomNotice("방을 나가지 못했어요. 최신 상태를 다시 확인해 주세요.");
+      try {
+        await refreshRoom(room.id);
+      } catch {
+        setRoomNotice("방 상태를 새로고침하지 못했어요. 잠시 후 다시 시도해 주세요.");
+      }
+    } finally {
+      setRoomBusy(false);
     }
-    setRoomBusy(false);
   }
 
   async function startRoom() {
@@ -604,12 +674,59 @@ export default function AccountRoomPanel() {
     }
   }
 
+  const ledgerDialog = user ? (
+    <HitLedgerDialog
+      key={user.id}
+      open={ledgerOpen}
+      busy={ledgerBusy}
+      error={ledgerError}
+      userId={user.id}
+      profile={profile}
+      names={names}
+      obligations={obligations}
+      onClose={() => setLedgerOpen(false)}
+      onRecordHit={recordHit}
+      onSearchProfiles={searchProfilesByName}
+      onAddOfflineObligation={addOfflineObligation}
+    />
+  ) : null;
+
   if (!isSupabaseConfigured() || !supabase) {
     return (
       <aside className="accountRoom accountRoom--empty">
         <strong>온라인 계정 연결 대기 중</strong>
         <span>환경 변수가 설정되면 회원가입·4인 방·계정별 딱밤 장부가 열려요.</span>
       </aside>
+    );
+  }
+
+  if (room?.status === "playing") {
+    if (!user) return null;
+    return (
+      <section
+        className="accountRoom accountRoom--playing"
+        aria-label="온라인 섯다 게임"
+      >
+        <OnlineRoomGame
+          room={room}
+          members={members}
+          names={names}
+          userId={user.id}
+          onRefreshRoom={refreshRoom}
+          onNotice={setRoomNotice}
+          onReturnToMain={returnToGameMain}
+          onOpenLedger={() => {
+            setLedgerError("");
+            setLedgerOpen(true);
+          }}
+        />
+        {roomNotice && (
+          <p className="accountRoom__notice" role="status">
+            {roomNotice}
+          </p>
+        )}
+        {ledgerDialog}
+      </section>
     );
   }
 
@@ -621,11 +738,7 @@ export default function AccountRoomPanel() {
   return (
     <>
       <aside
-        className={
-          room?.status === "playing"
-            ? "accountRoom accountRoom--playing"
-            : "accountRoom"
-        }
+        className="accountRoom"
       >
         {!user ? (
           <section className="online-shell__gate">
@@ -674,7 +787,7 @@ export default function AccountRoomPanel() {
         <section className="accountRoom__room" aria-labelledby="active-room-heading">
           <div className="accountRoom__roomTitle">
             <div><small>ROOM CODE</small><h3 id="active-room-heading">{room.code}</h3></div>
-            <span className={`accountRoom__status accountRoom__status--${room.status}`}>{room.status === "waiting" ? "대기 중" : room.status === "playing" ? "게임 중" : "정산 중"}</span>
+            <span className={`accountRoom__status accountRoom__status--${room.status}`}>{room.status === "waiting" ? "대기 중" : "정산 중"}</span>
           </div>
           <ol className="accountRoom__roster">
             {Array.from({ length: room.max_players }, (_, seat) => {
@@ -692,16 +805,6 @@ export default function AccountRoomPanel() {
         </section>
       )}
 
-      {room?.status === "playing" && (
-        <OnlineRoomGame
-          room={room}
-          names={names}
-          userId={user.id}
-          onRefreshRoom={refreshRoom}
-          onNotice={setRoomNotice}
-        />
-      )}
-
       {roomNotice && <p className="accountRoom__notice" role="status">{roomNotice}</p>}
           </>
         )}
@@ -715,22 +818,7 @@ export default function AccountRoomPanel() {
         onClose={() => setAuthOpen(false)}
         onSubmit={handleAuth}
       />
-      {user && (
-        <HitLedgerDialog
-          key={user.id}
-          open={ledgerOpen}
-          busy={ledgerBusy}
-          error={ledgerError}
-          userId={user.id}
-          profile={profile}
-          names={names}
-          obligations={obligations}
-          onClose={() => setLedgerOpen(false)}
-          onRecordHit={recordHit}
-          onSearchProfiles={searchProfilesByName}
-          onAddOfflineObligation={addOfflineObligation}
-        />
-      )}
+      {ledgerDialog}
     </>
   );
 }
@@ -750,8 +838,6 @@ function PanelStyles() {
     .accountRoom__status{padding:6px 9px;border-radius:999px;background:#263631;color:#bfcac4;font-size:11px;font-weight:800}.accountRoom__status--playing{background:#553118;color:#ffc57e}
     .accountRoom__roster{list-style:none;padding:0;margin:12px 0;display:grid;grid-template-columns:repeat(2,1fr);gap:7px}.accountRoom__roster li{display:grid;grid-template-columns:25px 1fr;align-items:center;padding:9px;background:#101918;border:1px dashed #384641;border-radius:10px;color:#69726e}.accountRoom__roster li>span{grid-row:1/3;display:grid;place-items:center;width:20px;height:20px;border-radius:6px;background:#26312e;font-size:10px}.accountRoom__roster li b{font-size:12px}.accountRoom__roster li em{font-style:normal;font-size:9px;color:#7d8a85}.accountRoom__roster li.is-filled{border-style:solid;color:#eef1ed}.accountRoom__roster li.is-filled>span{background:#91642e;color:#fff}.accountRoom__actions{display:flex;flex-wrap:wrap;gap:7px}.accountRoom__actions button{flex:1}
     .accountRoom__notice{margin:12px 0 0;padding:9px 11px;border-left:3px solid #d7a95e;background:#2a251c;color:#ead7b8;font-size:12px}
-    .accountRoom--playing{padding:14px 18px}.accountRoom--playing .accountRoom__stats{margin:9px 0}.accountRoom--playing .accountRoom__stats span{padding:6px 5px}.accountRoom--playing .accountRoom__room{padding-top:10px;margin-top:10px}.accountRoom--playing .accountRoom__roster{grid-template-columns:repeat(4,minmax(0,1fr));gap:5px;margin:8px 0 0}.accountRoom--playing .accountRoom__roster li{padding:7px}
-    @media(max-width:860px){.accountRoom--playing .accountRoom__roster{grid-template-columns:repeat(2,minmax(0,1fr))}}
     @media(max-width:520px){.accountRoom{padding:16px}.accountRoom__header{align-items:flex-start;flex-direction:column}.accountRoom__headerActions{width:100%}.accountRoom__headerActions button{flex:1;min-height:44px}.accountRoom__auth{grid-template-columns:1fr}.accountRoom__auth>*{grid-column:1}.accountRoom__stats{grid-template-columns:repeat(2,1fr)}.accountRoom__roster{grid-template-columns:1fr}}
   `}</style>;
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   createDeck,
@@ -16,6 +16,7 @@ import { getSupabaseBrowserClient } from "@/lib/supabase/client";
 import type { Tables } from "@/lib/supabase/database.types";
 
 type Room = Tables<"game_rooms">;
+type Member = Tables<"room_members">;
 
 type HandsSnapshot = {
   roundToken: string | null;
@@ -40,34 +41,51 @@ function formatted(value: number | string | bigint): string {
   return exact(value).toLocaleString("ko-KR");
 }
 
+function serverErrorMessage(error: unknown): string {
+  return error &&
+    typeof error === "object" &&
+    "message" in error &&
+    typeof error.message === "string"
+    ? error.message
+    : "";
+}
+
 function isStaleRequest(error: unknown): boolean {
-  return Boolean(
-    error &&
-      typeof error === "object" &&
-      "message" in error &&
-      typeof error.message === "string" &&
-      /stale room version/i.test(error.message),
+  return /stale room version/i.test(serverErrorMessage(error));
+}
+
+function isRoundRosterUnavailable(error: unknown): boolean {
+  return /Every player must be online|Round players no longer match/i.test(
+    serverErrorMessage(error),
   );
 }
 
 type Props = {
   room: Room;
+  members: Member[];
   names: Record<string, string>;
   userId: string;
   onRefreshRoom: (roomId: string) => Promise<void>;
   onNotice: (message: string) => void;
+  onReturnToMain: (message?: string) => void;
+  onOpenLedger: () => void;
 };
 
 export default function OnlineRoomGame({
   room,
+  members,
   names,
   userId,
   onRefreshRoom,
   onNotice,
+  onReturnToMain,
+  onOpenLedger,
 }: Props) {
   const supabase = useMemo(() => getSupabaseBrowserClient(), []);
+  const lifecycleGenerationRef = useRef(0);
   const [raiseAmount, setRaiseAmount] = useState("");
   const [busy, setBusy] = useState(false);
+  const [presenceNow, setPresenceNow] = useState(() => Date.now());
   const [handsSnapshot, setHandsSnapshot] = useState<HandsSnapshot>({
     roundToken: null,
     hands: {},
@@ -87,6 +105,122 @@ export default function OnlineRoomGame({
   const isMyTurn = Boolean(
     round?.phase === "betting" && round.betting.turnPlayerId === userId,
   );
+  const onlinePlayerIds = useMemo(
+    () =>
+      new Set(
+        members
+          .filter(
+            (member) =>
+              presenceNow - Date.parse(member.last_seen_at) <= 60_000,
+          )
+          .map((member) => member.user_id),
+      ),
+    [members, presenceNow],
+  );
+  const allPlayersOnline = Boolean(
+    round && round.playerIds.every((id) => onlinePlayerIds.has(id)),
+  );
+
+  const refreshLatest = useCallback(
+    async (failureNotice: string) => {
+      try {
+        await onRefreshRoom(room.id);
+      } catch {
+        onNotice(failureNotice);
+      }
+    },
+    [onNotice, onRefreshRoom, room.id],
+  );
+
+  const touchPresence = useCallback(
+    async (generation: number) => {
+      if (!supabase) return;
+      try {
+        const { error } = await supabase.rpc("touch_room_presence", {
+          target_room: room.id,
+        });
+        if (lifecycleGenerationRef.current !== generation) return;
+        if (error) {
+          await refreshLatest(
+            "접속 상태를 갱신하지 못했어요. 최신 게임 상태를 다시 확인해 주세요.",
+          );
+          return;
+        }
+        setPresenceNow(Date.now());
+      } catch {
+        if (lifecycleGenerationRef.current === generation) {
+          await refreshLatest(
+            "접속 상태를 갱신하지 못했어요. 최신 게임 상태를 다시 확인해 주세요.",
+          );
+        }
+      }
+    },
+    [refreshLatest, room.id, supabase],
+  );
+
+  const expireIfIdle = useCallback(
+    async (generation: number) => {
+      if (!supabase) return;
+      try {
+        const { data, error } = await supabase.rpc("expire_idle_game_room", {
+          target_room: room.id,
+        });
+        if (lifecycleGenerationRef.current !== generation) return;
+        if (error) {
+          await refreshLatest(
+            "게임 종료 상태를 확인하지 못했어요. 최신 게임 상태를 다시 확인해 주세요.",
+          );
+          return;
+        }
+        if (
+          data !== null &&
+          typeof data === "object" &&
+          "expired" in data &&
+          data.expired === true
+        ) {
+          onReturnToMain("2분 동안 게임 행동이 없어 게임이 자동 종료됐어요.");
+        }
+      } catch {
+        if (lifecycleGenerationRef.current === generation) {
+          await refreshLatest(
+            "게임 종료 상태를 확인하지 못했어요. 최신 게임 상태를 다시 확인해 주세요.",
+          );
+        }
+      }
+    },
+    [onReturnToMain, refreshLatest, room.id, supabase],
+  );
+
+  useEffect(() => {
+    const generation = lifecycleGenerationRef.current + 1;
+    lifecycleGenerationRef.current = generation;
+
+    const touch = () => void touchPresence(generation);
+    const expire = () => void expireIfIdle(generation);
+    const foreground = () => {
+      if (document.visibilityState !== "visible") return;
+      touch();
+      expire();
+      void refreshLatest(
+        "게임 상태를 새로고침하지 못했어요. 잠시 후 다시 시도해 주세요.",
+      );
+    };
+
+    touch();
+    expire();
+    const heartbeat = window.setInterval(touch, 20_000);
+    const expiry = window.setInterval(expire, 10_000);
+    document.addEventListener("visibilitychange", foreground);
+
+    return () => {
+      if (lifecycleGenerationRef.current === generation) {
+        lifecycleGenerationRef.current += 1;
+      }
+      window.clearInterval(heartbeat);
+      window.clearInterval(expiry);
+      document.removeEventListener("visibilitychange", foreground);
+    };
+  }, [expireIfIdle, refreshLatest, touchPresence]);
 
   useEffect(() => {
     if (!supabase || !roundToken) return;
@@ -145,7 +279,10 @@ export default function OnlineRoomGame({
   }, [isMyTurn, myEvaluation?.name, round]);
 
   async function submitAction(
-    action: { type: "call" } | { type: "raise"; amount: string },
+    action:
+      | { type: "call" }
+      | { type: "raise"; amount: string }
+      | { type: "fold" },
   ) {
     if (
       !supabase ||
@@ -174,9 +311,14 @@ export default function OnlineRoomGame({
       } else {
         setRaiseAmount("");
       }
-      await onRefreshRoom(room.id);
+      await refreshLatest(
+        "행동 뒤 최신 판을 불러오지 못했어요. 잠시 후 다시 확인해 주세요.",
+      );
     } catch {
       onNotice("행동을 처리하지 못했어요. 최신 판을 다시 불러와 주세요.");
+      await refreshLatest(
+        "행동 뒤 최신 판을 불러오지 못했어요. 잠시 후 다시 확인해 주세요.",
+      );
     } finally {
       setBusy(false);
     }
@@ -197,6 +339,10 @@ export default function OnlineRoomGame({
 
   async function startNextRound() {
     if (!supabase || !round || room.host_id !== userId || busy) return;
+    if (!allPlayersOnline) {
+      onNotice("참가자 접속을 확인할 수 없어 다음 판을 시작할 수 없어요.");
+      return;
+    }
     setBusy(true);
     try {
       const { error } = await supabase.rpc("start_game_round", {
@@ -204,15 +350,52 @@ export default function OnlineRoomGame({
         expected_version: room.version,
       });
       if (error) {
-        onNotice(
-          isStaleRequest(error)
+        const notice = isRoundRosterUnavailable(error)
+          ? "참가자 접속을 확인할 수 없어 다음 판을 시작할 수 없어요."
+          : isStaleRequest(error)
             ? "다른 기기에서 판이 먼저 바뀌었어요. 최신 상태로 다시 맞췄습니다."
-            : "다음 판을 시작하지 못했어요. 최신 상태를 확인해 주세요.",
-        );
+            : "다음 판을 시작하지 못했어요. 최신 상태를 확인해 주세요.";
+        onNotice(notice);
+        await refreshLatest(notice);
+        return;
       }
-      await onRefreshRoom(room.id);
+      await refreshLatest(
+        "다음 판을 시작했지만 최신 상태를 불러오지 못했어요. 잠시 후 다시 확인해 주세요.",
+      );
     } catch {
       onNotice("다음 판을 시작하지 못했어요. 잠시 후 다시 시도해 주세요.");
+      await refreshLatest(
+        "다음 판을 시작하지 못했어요. 잠시 후 다시 시도해 주세요.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function endGame() {
+    if (!supabase || busy) return;
+    setBusy(true);
+    const notice = "게임을 끝내지 못했어요. 최신 상태를 확인해 주세요.";
+    try {
+      const { error } =
+        room.host_id === userId
+          ? await supabase.rpc("close_game_room", {
+              target_room: room.id,
+              expected_version: room.version,
+            })
+          : await supabase.rpc("leave_game_room", {
+              target_room: room.id,
+              expected_version: room.version,
+            });
+      if (error) {
+        onNotice(notice);
+        await refreshLatest(notice);
+        return;
+      }
+      onReturnToMain("게임을 끝내고 메인으로 돌아왔어요.");
+    } catch {
+      onNotice(notice);
+      await refreshLatest(notice);
     } finally {
       setBusy(false);
     }
@@ -221,9 +404,22 @@ export default function OnlineRoomGame({
   if (!round) {
     return (
       <section className="onlineGame onlineGame--loading">
-        <strong>온라인 패를 준비하고 있어요</strong>
-        <span>방장이 판을 시작하면 서버가 2~4개 계정에 패를 배분합니다.</span>
-        <OnlineStyles />
+        <header className="onlineGame__topbar">
+          <div>
+            <small>방 {room.code}</small>
+            <h2>딱밤 섯다</h2>
+          </div>
+          <div className="onlineGame__topActions">
+            <button type="button" onClick={onOpenLedger}>
+              딱밤 장부
+            </button>
+            <button type="button" disabled={busy} onClick={() => void endGame()}>게임 끝내기</button>
+          </div>
+        </header>
+        <div className="onlineGame__loadingMessage" role="status">
+          <strong>온라인 패를 준비하고 있어요</strong>
+          <span>서버에서 최신 판 상태를 확인하는 중입니다.</span>
+        </div>
       </section>
     );
   }
@@ -232,77 +428,75 @@ export default function OnlineRoomGame({
     round.winnerIds.length === 1
       ? `${names[round.winnerIds[0]] ?? "플레이어"} 승리`
       : "공동 1위 · 채무 없음";
+  const myCardSlots: Array<Card | null> = myHand ?? [null, null];
+  const opponents = round.playerIds.filter((playerId) => playerId !== userId);
+  const isFolded = round.foldedPlayerIds.includes(userId);
 
   return (
     <section className="onlineGame" aria-labelledby="online-game-heading">
-      <header>
+      <header className="onlineGame__topbar">
         <div>
-          <small>REALTIME TABLE · ROUND {round.roundNumber}</small>
-          <h3 id="online-game-heading">계정 방 실전판</h3>
+          <small>방 {room.code} · {round.roundNumber}판</small>
+          <h2 id="online-game-heading">딱밤 섯다</h2>
         </div>
-        <span>
-          {round.phase === "betting"
-            ? `판 딱밤 ${formatted(round.betting.currentStake)}`
-            : winnerText}
-        </span>
+        <strong>현재 {formatted(round.betting.currentStake)} 딱밤</strong>
+        <div className="onlineGame__topActions">
+          <button type="button" onClick={onOpenLedger}>
+            딱밤 장부
+          </button>
+          <button type="button" disabled={busy} onClick={() => void endGame()}>게임 끝내기</button>
+        </div>
       </header>
 
-      <div className={`onlineGame__seats onlineGame__seats--${round.playerIds.length}`}>
-        {round.playerIds.map((playerId) => {
+      <div className={`onlineGame__table onlineGame__table--${round.playerIds.length}`}>
+        <div className={`onlineGame__opponents onlineGame__opponents--${opponents.length}`}>
+          {opponents.map((playerId) => {
           const isTurn =
             round.phase === "betting" &&
             round.betting.turnPlayerId === playerId;
           const visibleCards =
-            playerId === userId || round.phase === "showdown"
-              ? hands[playerId]
-              : undefined;
+            round.phase === "showdown" ? hands[playerId] : undefined;
           const cardSlots: Array<Card | null> = visibleCards ?? [null, null];
+          const playerFolded = round.foldedPlayerIds.includes(playerId);
+          const online = onlinePlayerIds.has(playerId);
 
           return (
-            <article key={playerId} className={isTurn ? "is-turn" : ""}>
-              <div>
-                <strong>
-                  {names[playerId] ?? "플레이어"}
-                  {playerId === userId ? " · 나" : ""}
-                </strong>
-                <small>
-                  {isTurn
-                    ? "현재 차례"
-                    : `받음 ${formatted(round.betting.commitments[playerId] ?? 0)}`}
-                </small>
+            <article
+              key={playerId}
+              className={`${isTurn ? "is-turn" : ""} ${playerFolded ? "is-folded" : ""}`.trim()}
+              aria-label={`${names[playerId] ?? "플레이어"} 자리`}
+            >
+              <div className="onlineGame__seatMeta">
+                <strong>{names[playerId] ?? "플레이어"}</strong>
+                <div className="onlineGame__badges">
+                  <span className={online ? "is-online" : "is-offline"}>
+                    {online ? "온라인" : "오프라인"}
+                  </span>
+                  {playerFolded && <span className="is-folded">죽음</span>}
+                </div>
               </div>
-              <div className="onlineGame__cards">
+              <div className="onlineGame__opponentCards">
                 {cardSlots.map((card, index) => (
                   // Source artwork is served from the attributed local card set.
                   // eslint-disable-next-line @next/next/no-img-element
                   <img
                     key={card?.id ?? `back-${index}`}
                     src={card ? `/cards/${card.imageId}.png` : "/cards/back.png"}
-                    width="72"
-                    height="106"
-                    alt={card ? `${card.month}월 패` : "뒤집힌 패"}
+                    width="76"
+                    height="112"
+                    alt={
+                      card
+                        ? `${names[playerId] ?? "상대"}의 ${card.month}월 패`
+                        : "상대 패 뒷면"
+                    }
                   />
                 ))}
               </div>
-              {playerId === userId && myEvaluation && (
-                <details className="onlineGame__rankRollup">
-                  <summary>
-                    <strong>내 패 · {myEvaluation.name}</strong>
-                    <span>족보 보기</span>
-                  </summary>
-                  <div className="onlineGame__rankList">
-                    {COMPACT_HAND_RANKING.map((group) => (
-                      <div
-                        key={group.id}
-                        className={currentRankingGroup === group.id ? "is-current" : ""}
-                      >
-                        <b>{group.label}</b>
-                        <span>{group.summary}</span>
-                      </div>
-                    ))}
-                  </div>
-                </details>
-              )}
+              <small>
+                {isTurn
+                  ? "현재 차례"
+                  : `받음 ${formatted(round.betting.commitments[playerId] ?? 0)}`}
+              </small>
               {round.phase === "showdown" && (
                 <b className="onlineGame__hand">
                   {round.evaluations[playerId]?.name}
@@ -310,20 +504,70 @@ export default function OnlineRoomGame({
               )}
             </article>
           );
-        })}
+          })}
+        </div>
+
+        <article className={`onlineGame__me ${isFolded ? "is-folded" : ""}`}>
+          <div className="onlineGame__meHeading">
+            <span>내 패</span>
+            <strong>{myEvaluation?.name ?? "패 확인 중"}</strong>
+          </div>
+          <div className="onlineGame__myCards">
+            {myCardSlots.map((card, index) => (
+              // Source artwork is served from the attributed local card set.
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                key={card?.id ?? `my-back-${index}`}
+                src={card ? `/cards/${card.imageId}.png` : "/cards/back.png"}
+                width="132"
+                height="194"
+                alt={card ? `내 ${card.month}월 패` : "내 패 불러오는 중"}
+              />
+            ))}
+          </div>
+          {isFolded && <span className="onlineGame__foldBadge">이번 판 죽음</span>}
+          {myEvaluation && (
+            <details className="onlineGame__rankRollup">
+              <summary>
+                <strong>내 패 · {myEvaluation.name}</strong>
+                <span>족보 보기</span>
+              </summary>
+              <div className="onlineGame__rankList">
+                {COMPACT_HAND_RANKING.map((group) => (
+                  <div
+                    key={group.id}
+                    className={currentRankingGroup === group.id ? "is-current" : ""}
+                  >
+                    <b>{group.label}</b>
+                    <span>{group.summary}</span>
+                  </div>
+                ))}
+              </div>
+            </details>
+          )}
+        </article>
       </div>
 
-      <div className="onlineGame__actions" aria-live="polite">
+      <footer className="onlineGame__actionDock" aria-live="polite">
         {round.phase === "showdown" ? (
           <>
-            <div>
+            <div className="onlineGame__result">
               <strong>{winnerText}</strong>
               <span>계정 장부 반영 완료</span>
             </div>
             {room.host_id === userId && (
-              <button type="button" disabled={busy} onClick={() => void startNextRound()}>
-                다음 판
-              </button>
+              <div className="onlineGame__nextRound">
+                {!allPlayersOnline && (
+                  <span>참가자 접속을 확인할 수 없어 다음 판을 시작할 수 없어요.</span>
+                )}
+                <button
+                  type="button"
+                  disabled={busy || !allPlayersOnline}
+                  onClick={() => void startNextRound()}
+                >
+                  다음 판
+                </button>
+              </div>
             )}
           </>
         ) : isMyTurn ? (
@@ -348,26 +592,16 @@ export default function OnlineRoomGame({
             <button type="button" disabled={busy} onClick={raise}>
               올리기
             </button>
+            <button type="button" className="onlineGame__fold" disabled={busy} onClick={() => void submitAction({ type: "fold" })}>죽기</button>
           </>
         ) : (
           <span>
-            {names[round.betting.turnPlayerId ?? ""] ?? "다른 계정"}의 차례를 기다리는 중…
+            {isFolded
+              ? "이번 판 결과를 기다리는 중…"
+              : `${names[round.betting.turnPlayerId ?? ""] ?? "다른 계정"}의 차례를 기다리는 중…`}
           </span>
         )}
-      </div>
-      <p className="onlineGame__privacy">
-        각 화면에는 자기 패만 먼저 보이며, 쇼다운 때 전부 공개됩니다.
-      </p>
-      <OnlineStyles />
+      </footer>
     </section>
   );
-}
-
-function OnlineStyles() {
-  return <style jsx global>{`
-    .onlineGame{margin-top:15px;padding:15px;border:1px solid rgba(211,164,86,.28);border-radius:16px;background:radial-gradient(circle at 50% 45%,#17443b,#0c211e 64%,#091512);color:#f7ecd8}.onlineGame--loading{display:flex;flex-direction:column;gap:4px}.onlineGame--loading span,.onlineGame__privacy{color:#8fa49c;font-size:11px}.onlineGame>header{display:flex;justify-content:space-between;align-items:center;gap:12px}.onlineGame>header small{color:#d9a553;font-size:9px;letter-spacing:.13em}.onlineGame>header h3{margin:3px 0 0}.onlineGame>header>span{padding:7px 9px;border-radius:9px;background:#081613;color:#ffdca5;font-size:11px;font-weight:800}
-    .onlineGame__seats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px;margin-top:12px}.onlineGame__seats article{display:grid;grid-template-columns:1fr auto;gap:7px;padding:9px;border:1px solid #2f5148;border-radius:12px;background:rgba(6,20,17,.72)}.onlineGame__seats article.is-turn{border-color:#e0a657;box-shadow:0 0 0 2px rgba(224,166,87,.13)}.onlineGame__seats article strong{display:block;font-size:11px}.onlineGame__seats article small{color:#8ba097;font-size:9px}.onlineGame__cards{grid-column:2;grid-row:1/3;display:flex}.onlineGame__cards img{width:38px;height:56px;object-fit:cover;border-radius:4px;border:1px solid #d2bd94;box-shadow:0 4px 9px rgba(0,0,0,.3)}.onlineGame__cards img+img{margin-left:-14px;transform:rotate(3deg)}.onlineGame__hand{align-self:end;color:#f0b75f;font-size:11px}
-    .onlineGame__actions{display:flex;align-items:end;gap:7px;margin-top:10px;padding:10px;border-radius:12px;background:#071411}.onlineGame__actions>span{color:#b3c2bc;font-size:12px}.onlineGame__actions>div{margin-right:auto}.onlineGame__actions>div strong,.onlineGame__actions>div span{display:block}.onlineGame__actions>div span{color:#91a49d;font-size:9px}.onlineGame__actions button{min-height:39px;padding:7px 12px;border:1px solid #db9d4e;border-radius:9px;background:linear-gradient(#db9d4e,#a9662c);color:#21160c;font-weight:900}.onlineGame__actions button small{display:block;font-size:8px}.onlineGame__actions button:disabled{opacity:.45}.onlineGame__actions label{color:#9dafaa;font-size:9px}.onlineGame__actions input{display:block;width:125px;margin-top:4px;padding:9px;border:1px solid #3c554e;border-radius:8px;background:#10231f;color:#fff}.onlineGame__actions input:focus{outline:2px solid #e0a657;outline-offset:1px}.onlineGame__privacy{margin:8px 0 0;text-align:center}
-    @media(max-width:560px){.onlineGame__seats{grid-template-columns:1fr}.onlineGame__actions{align-items:stretch;flex-wrap:wrap}.onlineGame__actions label{flex:1}.onlineGame__actions input{width:100%;box-sizing:border-box}}
-  `}</style>;
 }

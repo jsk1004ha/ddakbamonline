@@ -250,6 +250,384 @@ body[data-dialog-open="true"] {
   letter-spacing: 0.2em;
 }
 
+.accountRoom--playing {
+  width: 100%;
+  min-width: 0;
+  min-height: min(780px, calc(100vh - 150px));
+  padding: 0;
+  overflow-x: hidden;
+  color: #f6ead2;
+  background: #081714;
+  border: 1px solid rgba(221, 180, 106, 0.28);
+  border-radius: 22px;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.32);
+  font-family: var(--font-sans, Arial, sans-serif);
+}
+
+.accountRoom--playing > .accountRoom__notice {
+  margin: 0;
+  padding: 10px 12px;
+  border-top: 1px solid rgba(215, 169, 94, 0.45);
+  color: #ead7b8;
+  background: #2a251c;
+  font-size: 12px;
+}
+
+.onlineGame {
+  --my-card-w: 132px;
+  --my-card-h: 194px;
+  --opponent-card-w: 76px;
+  --opponent-card-h: 112px;
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  min-height: min(780px, calc(100vh - 150px));
+  overflow: clip;
+  grid-template-rows: auto minmax(420px, 1fr) auto;
+  color: #f7ecd8;
+  background: #081714;
+}
+
+.onlineGame--loading {
+  grid-template-rows: auto minmax(420px, 1fr);
+}
+
+.onlineGame__topbar {
+  display: grid;
+  min-width: 0;
+  align-items: center;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 18px;
+  padding: 14px clamp(14px, 2vw, 24px);
+  border-bottom: 1px solid rgba(221, 180, 106, 0.28);
+  background: linear-gradient(115deg, #132723, #0c1b18);
+}
+
+.onlineGame__topbar small {
+  display: block;
+  color: #d9a553;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+
+.onlineGame__topbar h2 {
+  margin: 3px 0 0;
+  font-family: Georgia, "Batang", serif;
+  font-size: clamp(20px, 2.5vw, 28px);
+  font-weight: 600;
+  letter-spacing: -0.04em;
+}
+
+.onlineGame__topbar > strong {
+  color: #f4ca86;
+  font-size: clamp(13px, 1.6vw, 18px);
+  white-space: nowrap;
+}
+
+.onlineGame__topActions {
+  display: flex;
+  min-width: 0;
+  gap: 8px;
+}
+
+.onlineGame button,
+.onlineGame input {
+  min-height: 44px;
+}
+
+.onlineGame button {
+  padding: 9px 14px;
+  border: 1px solid #715735;
+  border-radius: 10px;
+  color: #efd8b2;
+  background: #241e17;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.onlineGame button:hover:not(:disabled) {
+  border-color: #d9a553;
+  background: #362719;
+}
+
+.onlineGame button:disabled {
+  opacity: 0.46;
+}
+
+.onlineGame__table {
+  display: grid;
+  min-width: 0;
+  align-content: space-between;
+  grid-template-rows: minmax(190px, 1fr) auto;
+  gap: clamp(16px, 3vw, 30px);
+  padding: clamp(14px, 3vw, 32px);
+  background:
+    radial-gradient(ellipse at center, rgba(35, 104, 83, 0.8), rgba(12, 47, 40, 0.94) 64%, #071b17 100%),
+    repeating-linear-gradient(45deg, rgba(255, 255, 255, 0.012) 0 1px, transparent 1px 5px);
+  box-shadow: inset 0 0 70px rgba(0, 0, 0, 0.46);
+}
+
+.onlineGame__opponents {
+  display: grid;
+  min-width: 0;
+  align-items: start;
+  justify-content: center;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: clamp(10px, 2vw, 22px);
+}
+
+.onlineGame__opponents--1 {
+  grid-template-columns: minmax(210px, 360px);
+}
+
+.onlineGame__opponents--2 {
+  grid-template-columns: repeat(2, minmax(210px, 360px));
+}
+
+.onlineGame__opponents article {
+  display: grid;
+  min-width: 0;
+  justify-items: center;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid rgba(180, 208, 196, 0.2);
+  border-radius: 16px;
+  background: rgba(4, 20, 16, 0.62);
+  text-align: center;
+}
+
+.onlineGame__opponents article.is-turn {
+  border-color: #e0a657;
+  box-shadow: 0 0 0 3px rgba(224, 166, 87, 0.13);
+}
+
+.onlineGame__opponents article.is-folded {
+  opacity: 0.68;
+}
+
+.onlineGame__seatMeta {
+  display: flex;
+  max-width: 100%;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.onlineGame__seatMeta > strong {
+  max-width: 100%;
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.onlineGame__badges {
+  display: flex;
+  gap: 5px;
+}
+
+.onlineGame__badges span,
+.onlineGame__foldBadge {
+  padding: 4px 7px;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 800;
+}
+
+.onlineGame__badges .is-online {
+  color: #bdf2d9;
+  background: rgba(46, 132, 99, 0.4);
+}
+
+.onlineGame__badges .is-offline {
+  color: #d2c8bb;
+  background: rgba(99, 95, 89, 0.46);
+}
+
+.onlineGame__badges .is-folded,
+.onlineGame__foldBadge {
+  color: #ffd0bb;
+  background: rgba(158, 66, 41, 0.52);
+}
+
+.onlineGame__opponentCards,
+.onlineGame__myCards {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: center;
+}
+
+.onlineGame__opponentCards {
+  gap: 8px;
+}
+
+.onlineGame__opponentCards img {
+  width: var(--opponent-card-w);
+  height: var(--opponent-card-h);
+  object-fit: cover;
+  border: 1px solid #d2bd94;
+  border-radius: 7px;
+  box-shadow: 0 7px 16px rgba(0, 0, 0, 0.38);
+}
+
+.onlineGame__opponents article > small {
+  color: #91a49d;
+  font-size: 10px;
+}
+
+.onlineGame__hand {
+  color: #f0b75f;
+  font-size: 12px;
+}
+
+.onlineGame__me {
+  display: grid;
+  min-width: 0;
+  justify-items: center;
+  gap: 10px;
+}
+
+.onlineGame__meHeading {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 9px;
+}
+
+.onlineGame__meHeading span {
+  color: #91a49d;
+  font-size: 11px;
+}
+
+.onlineGame__meHeading strong {
+  color: #ffd18d;
+  font-size: 18px;
+}
+
+.onlineGame__myCards {
+  gap: 12px;
+}
+
+.onlineGame__myCards img {
+  width: var(--my-card-w);
+  height: var(--my-card-h);
+  object-fit: cover;
+  border: 2px solid #ead3a8;
+  border-radius: 10px;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.48);
+}
+
+.onlineGame__me.is-folded .onlineGame__myCards {
+  filter: saturate(0.45) brightness(0.72);
+}
+
+.onlineGame__me .onlineGame__rankRollup {
+  width: min(460px, 100%);
+  margin-top: 0;
+}
+
+.onlineGame__actionDock {
+  position: sticky;
+  z-index: 4;
+  bottom: 0;
+  display: flex;
+  min-width: 0;
+  align-items: end;
+  justify-content: center;
+  gap: 9px;
+  padding: 12px clamp(12px, 2vw, 22px);
+  border-top: 1px solid rgba(221, 180, 106, 0.28);
+  background: rgba(5, 17, 15, 0.97);
+  box-shadow: 0 -12px 30px rgba(0, 0, 0, 0.3);
+}
+
+.onlineGame__actionDock > span {
+  align-self: center;
+  color: #b7c5bf;
+  font-size: 13px;
+}
+
+.onlineGame__actionDock button {
+  border-color: #db9d4e;
+  color: #21160c;
+  background: linear-gradient(#e4ad63, #ae6c31);
+}
+
+.onlineGame__actionDock button small {
+  display: block;
+  font-size: 9px;
+}
+
+.onlineGame__actionDock label {
+  min-width: 150px;
+  color: #9dafaa;
+  font-size: 10px;
+}
+
+.onlineGame__actionDock input {
+  display: block;
+  width: 100%;
+  margin-top: 4px;
+  padding: 9px 10px;
+  border: 1px solid #3c554e;
+  border-radius: 8px;
+  color: #fff;
+  background: #10231f;
+}
+
+.onlineGame__actionDock .onlineGame__fold {
+  border-color: #934d39;
+  color: #ffd8c8;
+  background: #4c241b;
+}
+
+.onlineGame__result {
+  display: flex;
+  margin-right: auto;
+  align-self: center;
+  flex-direction: column;
+}
+
+.onlineGame__result strong {
+  color: #ffd18d;
+}
+
+.onlineGame__result span,
+.onlineGame__nextRound > span {
+  color: #91a49d;
+  font-size: 10px;
+}
+
+.onlineGame__nextRound {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.onlineGame__nextRound > span {
+  max-width: 260px;
+  text-align: right;
+}
+
+.onlineGame__loadingMessage {
+  display: grid;
+  place-content: center;
+  gap: 6px;
+  padding: 24px;
+  color: #f4d9aa;
+  text-align: center;
+}
+
+.onlineGame__loadingMessage span {
+  color: #91a49d;
+  font-size: 12px;
+}
+
 .onlineGame__rankRollup {
   grid-column: 1 / -1;
   margin-top: 8px;
@@ -332,6 +710,153 @@ body[data-dialog-open="true"] {
 }
 
 @media (max-width: 680px) {
+  .onlineGame {
+    --my-card-w: 96px;
+    --my-card-h: 142px;
+    --opponent-card-w: 58px;
+    --opponent-card-h: 86px;
+    min-height: calc(100dvh - 24px);
+    grid-template-rows: auto minmax(430px, 1fr) auto;
+  }
+
+  .onlineGame--loading {
+    grid-template-rows: auto minmax(430px, 1fr);
+  }
+
+  .onlineGame__topbar {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px;
+    padding: 11px 12px;
+  }
+
+  .onlineGame__topbar > strong {
+    grid-column: 2;
+    grid-row: 1;
+    font-size: 12px;
+  }
+
+  .onlineGame__topActions {
+    grid-column: 1 / -1;
+  }
+
+  .onlineGame__topActions button {
+    min-width: 0;
+    flex: 1;
+    padding-inline: 9px;
+  }
+
+  .onlineGame__table {
+    grid-template-rows: minmax(205px, 1fr) auto;
+    gap: 14px;
+    padding: 10px;
+  }
+
+  .onlineGame__opponents,
+  .onlineGame__opponents--2 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .onlineGame__opponents--1 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .onlineGame__opponents--1 article {
+    width: min(190px, 100%);
+    justify-self: center;
+  }
+
+  .onlineGame__opponents--3 article:last-child {
+    width: calc(50% - 4px);
+    grid-column: 1 / -1;
+    justify-self: center;
+  }
+
+  .onlineGame__opponents article {
+    gap: 5px;
+    padding: 7px 5px;
+    border-radius: 11px;
+  }
+
+  .onlineGame__seatMeta {
+    gap: 4px;
+    flex-direction: column;
+  }
+
+  .onlineGame__seatMeta > strong {
+    font-size: 11px;
+  }
+
+  .onlineGame__badges span {
+    padding: 3px 5px;
+    font-size: 8px;
+  }
+
+  .onlineGame__opponentCards {
+    gap: 6px;
+  }
+
+  .onlineGame__opponentCards img {
+    border-radius: 5px;
+  }
+
+  .onlineGame__opponents article > small,
+  .onlineGame__hand {
+    font-size: 9px;
+  }
+
+  .onlineGame__me {
+    gap: 7px;
+  }
+
+  .onlineGame__meHeading strong {
+    font-size: 16px;
+  }
+
+  .onlineGame__myCards {
+    gap: 10px;
+  }
+
+  .onlineGame__myCards img {
+    border-radius: 8px;
+  }
+
+  .onlineGame__actionDock {
+    display: grid;
+    align-items: end;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    padding: 10px;
+  }
+
+  .onlineGame__actionDock > span,
+  .onlineGame__result,
+  .onlineGame__nextRound {
+    grid-column: 1 / -1;
+  }
+
+  .onlineGame__actionDock button,
+  .onlineGame__actionDock label {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .onlineGame__result {
+    margin-right: 0;
+    align-items: center;
+    text-align: center;
+  }
+
+  .onlineGame__nextRound {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .onlineGame__nextRound > span {
+    max-width: none;
+    text-align: center;
+  }
+
   .online-shell {
     width: min(calc(100% - 20px), 1180px);
     padding-top: 16px;

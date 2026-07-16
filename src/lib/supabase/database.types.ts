@@ -144,6 +144,7 @@ export type Database = {
           seat: number;
           ready: boolean;
           joined_at: string;
+          last_seen_at: string;
         };
         Insert: {
           room_id: string;
@@ -151,6 +152,7 @@ export type Database = {
           seat: number;
           ready?: boolean;
           joined_at?: string;
+          last_seen_at?: string;
         };
         Update: {
           room_id?: string;
@@ -158,6 +160,7 @@ export type Database = {
           seat?: number;
           ready?: boolean;
           joined_at?: string;
+          last_seen_at?: string;
         };
         Relationships: [
           {
@@ -352,6 +355,18 @@ export type Database = {
         };
         Returns: Database["public"]["Tables"]["hit_obligations"]["Row"];
       };
+      close_game_room: {
+        Args: { expected_version: number; target_room: string };
+        Returns: Json;
+      };
+      expire_idle_game_room: {
+        Args: { target_room: string };
+        Returns: Json;
+      };
+      leave_game_room: {
+        Args: { expected_version: number; target_room: string };
+        Returns: Json;
+      };
       play_game_action: {
         Args: {
           action_name: string;
@@ -370,6 +385,10 @@ export type Database = {
       };
       start_game_round: {
         Args: { expected_version: number; target_room: string };
+        Returns: Json;
+      };
+      touch_room_presence: {
+        Args: { target_room: string };
         Returns: Json;
       };
     };

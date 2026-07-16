@@ -12,6 +12,14 @@ const accountRoomSource = await readFile(
   new URL("../src/components/account-room-panel.tsx", import.meta.url),
   "utf8",
 );
+const databaseTypesSource = await readFile(
+  new URL("../src/lib/supabase/database.types.ts", import.meta.url),
+  "utf8",
+);
+const globalStylesSource = await readFile(
+  new URL("../src/app/globals.css", import.meta.url),
+  "utf8",
+);
 
 const safeRound = {
   schema: 2,
@@ -560,4 +568,124 @@ test("keeps diagnostics nonidentifying and renders two backs for a hidden hand",
   assert.doesNotMatch(diagnosticsSource, /\b(?:userId|playerIds|turnPlayerId)\s*:/);
   assert.match(diagnosticsSource, /playerCount:/);
   assert.match(onlineGameSource, /visibleCards \?\? \[null, null\]/);
+});
+
+test("declares exact room presence and lifecycle RPC database types", () => {
+  const roomMembers = databaseTypesSource.match(
+    /room_members:\s*\{[\s\S]*?Relationships:/,
+  )?.[0];
+  assert.ok(roomMembers);
+  assert.match(roomMembers, /Row:\s*\{[\s\S]*?last_seen_at:\s*string;/);
+  assert.match(roomMembers, /Insert:\s*\{[\s\S]*?last_seen_at\?:\s*string;/);
+  assert.match(roomMembers, /Update:\s*\{[\s\S]*?last_seen_at\?:\s*string;/);
+
+  for (const rpc of ["close_game_room", "leave_game_room"]) {
+    assert.match(
+      databaseTypesSource,
+      new RegExp(
+        `${rpc}:\\s*\\{[\\s\\S]*?Args:\\s*\\{\\s*expected_version:\\s*number;\\s*target_room:\\s*string;?\\s*\\};[\\s\\S]*?Returns:\\s*Json;`,
+      ),
+    );
+  }
+  for (const rpc of ["expire_idle_game_room", "touch_room_presence"]) {
+    assert.match(
+      databaseTypesSource,
+      new RegExp(
+        `${rpc}:\\s*\\{[\\s\\S]*?Args:\\s*\\{\\s*target_room:\\s*string;?\\s*\\};[\\s\\S]*?Returns:\\s*Json;`,
+      ),
+    );
+  }
+
+  assert.match(databaseTypesSource, /raise_to:\s*string \| number \| null;/);
+  assert.match(databaseTypesSource, /stake:\s*string \| number;/);
+  assert.match(databaseTypesSource, /remaining_hits:\s*string \| number;/);
+});
+
+test("recovers closed, missing, and membership-deleted rooms to the game main", () => {
+  assert.match(
+    accountRoomSource,
+    /const returnToGameMain = useCallback\(\(message\?: string\)/,
+  );
+  assert.match(accountRoomSource, /setRoom\(null\);[\s\S]*?setMembers\(\[\]\);/);
+  assert.match(accountRoomSource, /PGRST116/);
+  assert.match(accountRoomSource, /!nextRoom/);
+  assert.match(accountRoomSource, /nextRoom\.status === "closed"/);
+  assert.match(
+    accountRoomSource,
+    /\.from\("room_members"\)[\s\S]*?\.eq\("room_id", roomId\)[\s\S]*?\.eq\("user_id", user\.id\)/,
+  );
+  assert.match(accountRoomSource, /payload\.eventType === "DELETE"/);
+  assert.match(accountRoomSource, /payload\.old\.user_id === user\.id/);
+});
+
+test("routes leave flows through lifecycle RPCs and isolates the playing branch", () => {
+  const leaveRoomSource = accountRoomSource.match(
+    /async function leaveRoom\(\)[\s\S]*?\r?\n  }\r?\n\r?\n  async function startRoom/,
+  )?.[0];
+  assert.ok(leaveRoomSource);
+  assert.match(leaveRoomSource, /\.rpc\("leave_game_room"/);
+  assert.doesNotMatch(leaveRoomSource, /\.delete\(\)/);
+  assert.match(accountRoomSource, /if \(room\?\.status === "playing"\)/);
+  assert.match(
+    accountRoomSource,
+    /<section\s+className="accountRoom accountRoom--playing"[^>]*>[\s\S]*?<OnlineRoomGame/,
+  );
+  assert.match(accountRoomSource, /members=\{members\}/);
+  assert.match(accountRoomSource, /onReturnToMain=\{returnToGameMain\}/);
+  assert.match(accountRoomSource, /onOpenLedger=/);
+  assert.equal(
+    (accountRoomSource.match(/<HitLedgerDialog/g) ?? []).length,
+    1,
+  );
+});
+
+test("dedicated game exposes fold, end, presence, and expiry controls", () => {
+  for (const rpc of [
+    "touch_room_presence",
+    "expire_idle_game_room",
+    "close_game_room",
+    "leave_game_room",
+  ]) {
+    assert.match(onlineGameSource, new RegExp(`\\.rpc\\("${rpc}"`));
+  }
+  assert.match(onlineGameSource, />죽기</);
+  assert.match(onlineGameSource, />게임 끝내기</);
+  assert.match(onlineGameSource, /20_000/);
+  assert.match(onlineGameSource, /10_000/);
+  assert.match(onlineGameSource, /60_000/);
+  assert.match(onlineGameSource, /visibilitychange/);
+  assert.match(onlineGameSource, /onlineGame__myCards/);
+  assert.match(onlineGameSource, /onlineGame__opponentCards/);
+  assert.match(onlineGameSource, /allPlayersOnline/);
+  assert.match(onlineGameSource, /Every player must be online/);
+  assert.match(onlineGameSource, /Round players no longer match/);
+  assert.match(
+    onlineGameSource,
+    /참가자 접속을 확인할 수 없어 다음 판을 시작할 수 없어요\./,
+  );
+  assert.match(
+    onlineGameSource,
+    /2분 동안 게임 행동이 없어 게임이 자동 종료됐어요\./,
+  );
+});
+
+test("dedicated game CSS keeps exact large-card responsive dimensions", () => {
+  assert.match(globalStylesSource, /\.accountRoom--playing\s*\{[\s\S]*?width:\s*100%;/);
+  assert.match(globalStylesSource, /\.onlineGame\s*\{[\s\S]*?min-height:/);
+  assert.match(globalStylesSource, /--my-card-w:\s*132px;/);
+  assert.match(globalStylesSource, /--my-card-h:\s*194px;/);
+  assert.match(globalStylesSource, /--opponent-card-w:\s*76px;/);
+  assert.match(globalStylesSource, /--opponent-card-h:\s*112px;/);
+  const mobile = globalStylesSource.match(
+    /@media \(max-width: 680px\) \{[\s\S]*\n\}/,
+  )?.[0];
+  assert.ok(mobile);
+  assert.match(mobile, /--my-card-w:\s*96px;/);
+  assert.match(mobile, /--my-card-h:\s*142px;/);
+  assert.match(mobile, /--opponent-card-w:\s*58px;/);
+  assert.match(mobile, /--opponent-card-h:\s*86px;/);
+  assert.match(globalStylesSource, /\.onlineGame__opponents\s*\{[\s\S]*?display:\s*grid;/);
+  assert.match(globalStylesSource, /\.onlineGame__actionDock\s*\{[\s\S]*?position:\s*sticky;/);
+  assert.match(globalStylesSource, /min-height:\s*44px;/);
+  assert.match(globalStylesSource, /overflow-x:\s*hidden;/);
 });
