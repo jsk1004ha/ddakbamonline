@@ -431,6 +431,14 @@ export default function AccountRoomPanel() {
     if (!isActiveAccount(scope)) return;
     const isCurrentRoomChannel = () =>
       isActiveAccount(scope) && currentRoomIdRef.current === roomId;
+    const refreshActiveRoom = () => {
+      if (!roomId || !isCurrentRoomChannel()) return;
+      void refreshRoom(roomId, scope).catch(() => {
+        if (isCurrentRoomChannel()) {
+          setRoomNotice("게임 상태를 새로고침하지 못했어요. 잠시 후 다시 시도해 주세요.");
+        }
+      });
+    };
     const channel = supabase
       .channel(`account-room-${user.id}-${roomId ?? "none"}`)
       .on(
@@ -446,14 +454,6 @@ export default function AccountRoomPanel() {
         },
       );
     if (roomId) {
-      const refreshActiveRoom = () => {
-        if (!isCurrentRoomChannel()) return;
-        void refreshRoom(roomId, scope).catch(() => {
-          if (isCurrentRoomChannel()) {
-            setRoomNotice("게임 상태를 새로고침하지 못했어요. 잠시 후 다시 시도해 주세요.");
-          }
-        });
-      };
       channel
         .on(
           "postgres_changes",
@@ -488,7 +488,10 @@ export default function AccountRoomPanel() {
           },
         );
     }
-    channel.subscribe();
+    channel.subscribe((status) => {
+      if (status !== "SUBSCRIBED" || !roomId || !isCurrentRoomChannel()) return;
+      refreshActiveRoom();
+    });
     return () => {
       void supabase.removeChannel(channel);
     };

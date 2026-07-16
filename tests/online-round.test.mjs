@@ -693,6 +693,27 @@ test("dedicated game CSS keeps exact large-card responsive dimensions", () => {
   assert.match(globalStylesSource, /overflow-x:\s*hidden;/);
 });
 
+test("short desktop gameplay keeps the action dock in the initial viewport", () => {
+  const shortDesktop = globalStylesSource.match(
+    /@media \(min-width: 681px\) and \(max-height: 800px\) \{[\s\S]*?\n\}/,
+  )?.[0];
+
+  assert.ok(shortDesktop);
+  assert.match(shortDesktop, /\.online-shell:has\(\.onlineGame\)/);
+  assert.match(
+    shortDesktop,
+    /\.onlineGame__me\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0, 1fr\) auto minmax\(0, 1fr\);/,
+  );
+  assert.match(
+    shortDesktop,
+    /\.onlineGame__me \.onlineGame__rankRollup\s*\{[\s\S]*?grid-column:\s*3;[\s\S]*?grid-row:\s*2;/,
+  );
+  assert.match(
+    shortDesktop,
+    /\.onlineGame__actionDock\s*\{[\s\S]*?position:\s*sticky;/,
+  );
+});
+
 test("room refreshes are account scoped and stale room work cannot mutate state", () => {
   assert.match(
     accountRoomSource,
@@ -735,6 +756,22 @@ test("realtime room subscriptions use stable IDs and reject late channel events"
   const dependencies = subscriptionSource.slice(subscriptionSource.lastIndexOf("}, ["));
   assert.match(dependencies, /\broomId\b/);
   assert.doesNotMatch(dependencies, /\n    room,/);
+});
+
+test("room subscription closes the setup gap before deriving ready state", () => {
+  const subscriptionSource = accountRoomSource.match(
+    /useEffect\(\(\) => \{\n    if \(!supabase \|\| !user\) return;[\s\S]*?\n  \}, \[[\s\S]*?\n  \]\);/,
+  )?.[0];
+
+  assert.ok(subscriptionSource);
+  assert.match(
+    subscriptionSource,
+    /const refreshActiveRoom = \(\) => \{[\s\S]*?if \(!roomId \|\| !isCurrentRoomChannel\(\)\) return;/,
+  );
+  assert.match(
+    subscriptionSource,
+    /channel\.subscribe\(\(status\) => \{[\s\S]*?status !== "SUBSCRIBED"[\s\S]*?refreshActiveRoom\(\);/,
+  );
 });
 
 test("lifecycle polling prevents overlapping RPCs and coalesces room refreshes", () => {

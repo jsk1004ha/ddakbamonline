@@ -709,6 +709,84 @@ body[data-dialog-open="true"] {
   letter-spacing: 0.08em;
 }
 
+@media (min-width: 681px) and (max-height: 800px) {
+  .online-shell:has(.onlineGame) {
+    width: min(1180px, calc(100% - 24px));
+    padding: 8px 0 0;
+  }
+
+  .online-shell:has(.onlineGame) .online-shell__header {
+    padding-bottom: 8px;
+  }
+
+  .online-shell:has(.onlineGame) .online-shell__main {
+    margin-top: 8px;
+  }
+
+  .online-shell:has(.onlineGame) .site-footer {
+    display: none;
+  }
+
+  .accountRoom--playing,
+  .onlineGame {
+    min-height: calc(100dvh - 76px);
+  }
+
+  .onlineGame {
+    grid-template-rows: auto minmax(0, 1fr) auto;
+  }
+
+  .onlineGame__topbar {
+    padding: 8px 14px;
+  }
+
+  .onlineGame__table {
+    grid-template-rows: minmax(150px, 1fr) auto;
+    gap: 8px;
+    padding: 8px 14px;
+  }
+
+  .onlineGame__opponents article {
+    gap: 4px;
+    padding: 6px 10px;
+  }
+
+  .onlineGame__me {
+    align-items: end;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    gap: 6px 10px;
+  }
+
+  .onlineGame__meHeading {
+    grid-column: 1 / -1;
+    grid-row: 1;
+  }
+
+  .onlineGame__myCards {
+    grid-column: 2;
+    grid-row: 2;
+  }
+
+  .onlineGame__foldBadge {
+    grid-column: 2;
+    grid-row: 3;
+  }
+
+  .onlineGame__me .onlineGame__rankRollup {
+    width: min(300px, 100%);
+    margin: 0;
+    align-self: end;
+    justify-self: end;
+    grid-column: 3;
+    grid-row: 2;
+  }
+
+  .onlineGame__actionDock {
+    position: sticky;
+    padding-block: 8px;
+  }
+}
+
 @media (max-width: 680px) {
   .onlineGame {
     --my-card-w: 96px;
