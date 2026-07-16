@@ -798,6 +798,21 @@ test("room subscription closes the setup gap before deriving ready state", () =>
   );
 });
 
+test("waiting rooms poll as a fallback when realtime changes are missed", () => {
+  assert.match(
+    accountRoomSource,
+    /const LOBBY_REFRESH_INTERVAL_MS = 1_000;/,
+  );
+  assert.match(
+    accountRoomSource,
+    /if \(!supabase \|\| !user \|\| !roomId \|\| roomStatus !== "waiting"\) return;[\s\S]*?window\.setInterval\([\s\S]*?refreshRoom\(roomId, scope\)[\s\S]*?LOBBY_REFRESH_INTERVAL_MS/,
+  );
+  assert.match(
+    accountRoomSource,
+    /return \(\) => window\.clearInterval\(interval\);/,
+  );
+});
+
 test("lifecycle polling prevents overlapping RPCs and coalesces room refreshes", () => {
   assert.match(onlineGameSource, /const touchInFlightGenerationRef = useRef<number \| null>\(null\);/);
   assert.match(onlineGameSource, /const expireInFlightGenerationRef = useRef<number \| null>\(null\);/);

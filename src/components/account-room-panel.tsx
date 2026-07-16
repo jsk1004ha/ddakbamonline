@@ -54,6 +54,7 @@ const LEDGER_MUTATION_BUSY_ERROR =
   "딱밤 빚을 등록하고 있어요. 잠시만 기다려 주세요.";
 const LEDGER_REFRESH_WARNING =
   "딱밤 빚은 등록됐지만 최신 장부를 불러오지 못했어요. 잠시 후 다시 확인해 주세요.";
+const LOBBY_REFRESH_INTERVAL_MS = 1_000;
 
 function errorMessage(error: unknown): string {
   const message =
@@ -113,6 +114,7 @@ export default function AccountRoomPanel() {
   const [roomBusy, setRoomBusy] = useState(false);
   const [roomNotice, setRoomNotice] = useState("");
   const roomId = room?.id ?? null;
+  const roomStatus = room?.status ?? null;
 
   const setCurrentRoom = useCallback((nextRoom: Room | null) => {
     currentRoomIdRef.current = nextRoom?.id ?? null;
@@ -505,6 +507,31 @@ export default function AccountRoomPanel() {
     refreshRoom,
     returnToGameMain,
     roomId,
+    supabase,
+    user,
+  ]);
+
+  useEffect(() => {
+    if (!supabase || !user || !roomId || roomStatus !== "waiting") return;
+    const scope = captureAccountScope(user.id);
+    if (!isActiveAccount(scope)) return;
+    const interval = window.setInterval(() => {
+      void refreshRoom(roomId, scope).catch(() => {
+        if (
+          isActiveAccount(scope) &&
+          currentRoomIdRef.current === roomId
+        ) {
+          setRoomNotice("방 상태를 새로고침하지 못했어요. 잠시 후 다시 시도해 주세요.");
+        }
+      });
+    }, LOBBY_REFRESH_INTERVAL_MS);
+    return () => window.clearInterval(interval);
+  }, [
+    captureAccountScope,
+    isActiveAccount,
+    refreshRoom,
+    roomId,
+    roomStatus,
     supabase,
     user,
   ]);
