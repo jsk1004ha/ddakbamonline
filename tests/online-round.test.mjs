@@ -270,6 +270,43 @@ test("preserves a huge exact frozen folded stake", () => {
   assert.equal(Object.isFrozen(hugeRound.foldedStakes), true);
 });
 
+test("rejects strings for safely representable exact quantities", () => {
+  const foldedSafeStringRound = {
+    ...showdownRound,
+    foldedPlayerIds: ["a"],
+    foldedStakes: { a: "1" },
+    betting: {
+      ...showdownRound.betting,
+      commitments: { a: 1, b: 3 },
+      pot: 4,
+      lastAggressorId: "b",
+    },
+    winnerIds: ["b"],
+  };
+  const malformedStates = [
+    {
+      ...safeRound,
+      betting: { ...safeRound.betting, currentStake: "1" },
+    },
+    {
+      ...showdownRound,
+      betting: {
+        ...showdownRound.betting,
+        commitments: { a: "3", b: 3 },
+      },
+    },
+    {
+      ...showdownRound,
+      betting: { ...showdownRound.betting, pot: "6" },
+    },
+    foldedSafeStringRound,
+  ];
+
+  for (const state of malformedStates) {
+    assert.equal(readPublicOnlineRound(state), null);
+  }
+});
+
 test("rejects legacy state and every state with a hands property", () => {
   assert.equal(readPublicOnlineRound({ ...safeRound, schema: 1 }), null);
   assert.equal(readPublicOnlineRound({ ...safeRound, hands: { a: [] } }), null);

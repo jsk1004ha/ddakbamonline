@@ -1,5 +1,6 @@
 const MIN_PLAYERS = 2;
 const MAX_PLAYERS = 4;
+const MAX_SAFE_EXACT_QUANTITY = BigInt(Number.MAX_SAFE_INTEGER);
 const ROUND_KEYS = [
   "schema",
   "roundToken",
@@ -100,6 +101,9 @@ function parseExactQuantity(value, allowZero) {
     /^(?:0|[1-9]\d*)$/.test(value)
   ) {
     quantity = BigInt(value);
+    if (quantity <= MAX_SAFE_EXACT_QUANTITY) {
+      return null;
+    }
   } else {
     return null;
   }
