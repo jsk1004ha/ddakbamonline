@@ -94,6 +94,7 @@ export default function AccountRoomPanel() {
   });
   const offlineMutationRef = useRef<OfflineMutation | null>(null);
   const currentRoomIdRef = useRef<string | null>(null);
+  const roomRefreshRequestRef = useRef(0);
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
   const [room, setRoom] = useState<Room | null>(null);
@@ -188,6 +189,7 @@ export default function AccountRoomPanel() {
       if (!supabase || !user) return;
       const activeScope = scope ?? captureAccountScope(user.id);
       if (!isActiveAccount(activeScope)) return;
+      const refreshRequest = ++roomRefreshRequestRef.current;
       const startingRoomId = currentRoomIdRef.current;
       const [roomResponse, membersResponse, membershipResponse] = await Promise.all([
         supabase.from("game_rooms").select("*").eq("id", roomId).single(),
@@ -203,6 +205,7 @@ export default function AccountRoomPanel() {
           .eq("user_id", activeScope.actorId)
           .maybeSingle(),
       ]);
+      if (roomRefreshRequestRef.current !== refreshRequest) return;
       if (scope && !isActiveAccount(scope)) return;
       if (
         !isActiveAccount(activeScope) ||

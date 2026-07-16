@@ -738,6 +738,30 @@ test("room refreshes are account scoped and stale room work cannot mutate state"
   assert.match(refreshRoomSource, /loadProfiles\([\s\S]*?activeScope/);
 });
 
+test("only the latest concurrent room refresh can update lobby state", () => {
+  assert.match(
+    accountRoomSource,
+    /const roomRefreshRequestRef = useRef\(0\);/,
+  );
+  const refreshRoomSource = accountRoomSource.match(
+    /const refreshRoom = useCallback\([\s\S]*?\r?\n  \);\r?\n\r?\n  const refreshAccount/,
+  )?.[0];
+
+  assert.ok(refreshRoomSource);
+  assert.match(
+    refreshRoomSource,
+    /const refreshRequest = \+\+roomRefreshRequestRef\.current;/,
+  );
+  assert.match(
+    refreshRoomSource,
+    /if \(roomRefreshRequestRef\.current !== refreshRequest\) return;/,
+  );
+  assert.match(
+    refreshRoomSource,
+    /roomRefreshRequestRef\.current !== refreshRequest[\s\S]*?setCurrentRoom\(nextRoom\);/,
+  );
+});
+
 test("realtime room subscriptions use stable IDs and reject late channel events", () => {
   assert.match(accountRoomSource, /const roomId = room\?\.id \?\? null;/);
   assert.match(
