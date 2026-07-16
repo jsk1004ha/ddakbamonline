@@ -174,6 +174,8 @@ test("createBettingState starts every player at zero commitment", () => {
   assert.equal(state.turnPlayerId, "b");
   assert.equal(state.lastAggressorId, null);
   assert.equal(state.status, "betting");
+  assert.deepEqual(state.foldedPlayerIds, []);
+  assert.deepEqual(state.foldedStakes, {});
 });
 
 test("four-player call turns wrap and complete after every player acts", () => {
@@ -222,6 +224,100 @@ test("a raise resets required actions to every other player", () => {
   assert.equal(state.pot, 28);
 });
 
+test("a fold freezes the current stake and a later raise skips the folded player", () => {
+  const initial = createBettingState(["a", "b", "c", "d"]);
+  const afterCall = applyAction(initial, "a", { type: "call" });
+  const afterFirstRaise = applyAction(afterCall, "b", {
+    type: "raise",
+    amount: 7,
+  });
+  const afterFold = applyAction(afterFirstRaise, "c", { type: "fold" });
+  const afterSecondRaise = applyAction(afterFold, "d", {
+    type: "raise",
+    amount: 9,
+  });
+
+  assert.deepEqual(afterFold.foldedPlayerIds, ["c"]);
+  assert.deepEqual(afterFold.foldedStakes, { c: 7 });
+  assert.equal(afterFold.commitments.c, 7);
+  assert.equal(afterFold.pot, 15);
+  assert.equal(afterFold.turnPlayerId, "d");
+  assert.deepEqual(afterSecondRaise.pendingPlayerIds, ["a", "b"]);
+  assert.equal(afterSecondRaise.turnPlayerId, "a");
+  assert.equal(afterSecondRaise.commitments.c, 7);
+  assert.equal(afterSecondRaise.foldedStakes.c, 7);
+
+  const afterACall = applyAction(afterSecondRaise, "a", { type: "call" });
+  const complete = applyAction(afterACall, "b", { type: "call" });
+
+  assert.equal(complete.status, "complete");
+  assert.equal(complete.turnPlayerId, null);
+  assert.deepEqual(complete.pendingPlayerIds, []);
+  assert.deepEqual(complete.commitments, { a: 9, b: 9, c: 7, d: 9 });
+  assert.equal(complete.pot, 34);
+
+  assert.deepEqual(initial.foldedPlayerIds, []);
+  assert.deepEqual(initial.foldedStakes, {});
+  assert.deepEqual(afterFirstRaise.foldedPlayerIds, []);
+  assert.deepEqual(afterFirstRaise.foldedStakes, {});
+  assert.deepEqual(afterFold.pendingPlayerIds, ["d", "a"]);
+  assert.deepEqual(afterFold.foldedStakes, { c: 7 });
+});
+
+test("folding completes immediately when only one active player remains", () => {
+  const initial = createBettingState(["a", "b"], 5);
+  const complete = applyAction(initial, "a", { type: "fold" });
+
+  assert.equal(complete.status, "complete");
+  assert.equal(complete.turnPlayerId, null);
+  assert.deepEqual(complete.pendingPlayerIds, []);
+  assert.deepEqual(complete.foldedPlayerIds, ["a"]);
+  assert.deepEqual(complete.foldedStakes, { a: 5 });
+  assert.deepEqual(complete.commitments, { a: 5, b: 0 });
+  assert.equal(complete.pot, 5);
+  assert.equal(initial.commitments.a, 0);
+  assert.deepEqual(initial.foldedPlayerIds, []);
+  assert.deepEqual(initial.foldedStakes, {});
+});
+
+test("four-player folds retain original seat order rather than action order", () => {
+  let state = createBettingState(["a", "b", "c", "d"], 1, 2);
+  state = applyAction(state, "c", { type: "fold" });
+  state = applyAction(state, "d", { type: "call" });
+  state = applyAction(state, "a", { type: "fold" });
+
+  assert.deepEqual(state.foldedPlayerIds, ["a", "c"]);
+  assert.deepEqual(state.foldedStakes, { c: 1, a: 1 });
+  assert.deepEqual(state.pendingPlayerIds, ["b"]);
+  assert.equal(state.turnPlayerId, "b");
+
+  state = applyAction(state, "b", { type: "call" });
+  assert.equal(state.status, "complete");
+  assert.deepEqual(state.commitments, { a: 1, b: 1, c: 1, d: 1 });
+});
+
+test("folded stakes preserve arbitrary precision through later raises", () => {
+  const hugeStake = "900719925474099312345678901234567890";
+  const higherStake = "900719925474099312345678901234567999";
+  const afterFold = applyAction(
+    createBettingState(["a", "b", "c"], hugeStake),
+    "a",
+    { type: "fold" },
+  );
+  const afterRaise = applyAction(afterFold, "b", {
+    type: "raise",
+    amount: higherStake,
+  });
+
+  assert.equal(afterFold.foldedStakes.a, hugeStake);
+  assert.equal(afterFold.commitments.a, hugeStake);
+  assert.equal(afterFold.pot, hugeStake);
+  assert.equal(afterRaise.foldedStakes.a, hugeStake);
+  assert.equal(afterRaise.commitments.a, hugeStake);
+  assert.deepEqual(afterRaise.pendingPlayerIds, ["c"]);
+  assert.doesNotThrow(() => JSON.stringify(afterRaise));
+});
+
 test("raise amount is exact above Number.MAX_SAFE_INTEGER and remains JSON serializable", () => {
   const hugeStake = "900719925474099312345678901234567890";
   const raised = applyAction(
@@ -261,7 +357,10 @@ test("betting rejects invalid setup, out-of-turn, unsupported, and invalid actio
 
   const state = createBettingState(["a", "b"]);
   assert.throws(() => applyAction(state, "b", { type: "call" }), RangeError);
-  assert.throws(() => applyAction(state, "a", { type: "fold" }), RangeError);
+  assert.throws(
+    () => applyAction(state, "a", { type: "check" }),
+    /action type must be call, raise, or fold/,
+  );
   assert.throws(() => applyAction(state, "a", null), TypeError);
   for (const amount of [
     1,
@@ -331,6 +430,80 @@ test("applyAction rejects incoherent pending players, turn, and aggressor", () =
       /invalid betting state/,
     );
   }
+});
+
+test("applyAction rejects malformed rehydrated folded players and stakes", () => {
+  const initial = createBettingState(["a", "b", "c", "d"]);
+  const afterFold = applyAction(initial, "a", { type: "fold" });
+  const malformedStates = [
+    { ...initial, foldedPlayerIds: null },
+    { ...initial, foldedPlayerIds: ["a", "a"], foldedStakes: { a: 1 } },
+    {
+      ...initial,
+      foldedPlayerIds: ["outsider"],
+      foldedStakes: { outsider: 1 },
+    },
+    {
+      ...initial,
+      foldedPlayerIds: ["c", "a"],
+      foldedStakes: { a: 1, c: 1 },
+      commitments: { a: 1, b: 0, c: 1, d: 0 },
+      pot: 2,
+      pendingPlayerIds: ["b", "d"],
+      turnPlayerId: "b",
+    },
+    { ...initial, foldedStakes: null },
+    { ...initial, foldedStakes: [] },
+    { ...afterFold, foldedStakes: {} },
+    { ...afterFold, foldedStakes: { a: 1, b: 1 } },
+    { ...afterFold, foldedStakes: { a: "1" } },
+    { ...afterFold, foldedStakes: { a: 0 } },
+    { ...afterFold, foldedStakes: { a: 2 } },
+    {
+      ...afterFold,
+      foldedStakes: { a: 1 },
+      commitments: { ...afterFold.commitments, a: 0 },
+      pot: 0,
+    },
+    {
+      ...afterFold,
+      pendingPlayerIds: ["a", "b", "c", "d"],
+      turnPlayerId: "a",
+    },
+    { ...afterFold, turnPlayerId: "a" },
+    {
+      ...initial,
+      foldedPlayerIds: ["a", "b", "c", "d"],
+      foldedStakes: { a: 1, b: 1, c: 1, d: 1 },
+      commitments: { a: 1, b: 1, c: 1, d: 1 },
+      pot: 4,
+      pendingPlayerIds: [],
+      turnPlayerId: null,
+      status: "complete",
+    },
+  ];
+
+  for (const malformed of malformedStates) {
+    assert.throws(
+      () => applyAction(malformed, malformed.turnPlayerId ?? "a", { type: "call" }),
+      /(?:invalid (?:complete )?betting state|state folded)/,
+    );
+  }
+});
+
+test("applyAction rejects folded pending players and a folded last aggressor", () => {
+  const initial = createBettingState(["a", "b", "c", "d"]);
+  const raised = applyAction(initial, "a", { type: "raise", amount: 7 });
+  const foldedAggressor = {
+    ...raised,
+    foldedPlayerIds: ["a"],
+    foldedStakes: { a: 7 },
+  };
+
+  assert.throws(
+    () => applyAction(foldedAggressor, "b", { type: "call" }),
+    /invalid betting state/,
+  );
 });
 
 test("applyAction rejects incoherent completed rehydrated states", () => {

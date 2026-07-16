@@ -260,6 +260,8 @@ export function createBettingState(
     lastAggressorId: null,
     status: "betting",
     pendingPlayerIds,
+    foldedPlayerIds: [],
+    foldedStakes: {},
   };
 }
 
@@ -280,6 +282,18 @@ function validateBettingState(state) {
   }
   if (!Array.isArray(state.pendingPlayerIds)) {
     throw new TypeError("state pending players are invalid");
+  }
+  if (!Array.isArray(state.foldedPlayerIds)) {
+    throw new TypeError("state folded players are invalid");
+  }
+  if (
+    state.foldedStakes === null ||
+    typeof state.foldedStakes !== "object" ||
+    Array.isArray(state.foldedStakes) ||
+    (Object.getPrototypeOf(state.foldedStakes) !== Object.prototype &&
+      Object.getPrototypeOf(state.foldedStakes) !== null)
+  ) {
+    throw new TypeError("state folded stakes are invalid");
   }
 
   const invalidState = (message, complete = false) => {
@@ -323,6 +337,58 @@ function validateBettingState(state) {
       ),
     ]),
   );
+  const foldedPlayers = state.foldedPlayerIds;
+  const foldedSet = new Set(foldedPlayers);
+  if (
+    foldedSet.size !== foldedPlayers.length ||
+    foldedPlayers.some((playerId) => !state.playerIds.includes(playerId))
+  ) {
+    invalidState("foldedPlayerIds must be unique playerIds");
+  }
+  const orderedFoldedPlayers = state.playerIds.filter((playerId) =>
+    foldedSet.has(playerId),
+  );
+  if (
+    foldedPlayers.some(
+      (playerId, index) => playerId !== orderedFoldedPlayers[index],
+    )
+  ) {
+    invalidState("foldedPlayerIds must follow playerIds seat order");
+  }
+
+  const foldedStakeKeys = Object.keys(state.foldedStakes);
+  if (
+    foldedStakeKeys.length !== foldedPlayers.length ||
+    foldedStakeKeys.some((playerId) => !foldedSet.has(playerId))
+  ) {
+    invalidState("foldedStakes keys must exactly match foldedPlayerIds");
+  }
+  const foldedStakes = Object.fromEntries(
+    foldedPlayers.map((playerId) => [
+      playerId,
+      canonicalQuantity(
+        state.foldedStakes[playerId],
+        `folded stake for ${playerId}`,
+      ),
+    ]),
+  );
+  for (const playerId of foldedPlayers) {
+    if (
+      foldedStakes[playerId] > currentStake ||
+      foldedStakes[playerId] !== commitments[playerId]
+    ) {
+      invalidState(
+        "each folded stake must equal its commitment without exceeding currentStake",
+      );
+    }
+  }
+
+  const activePlayers = state.playerIds.filter(
+    (playerId) => !foldedSet.has(playerId),
+  );
+  if (activePlayers.length === 0) {
+    invalidState("at least one player must remain active");
+  }
 
   if (
     state.playerIds.some((playerId) => commitments[playerId] > currentStake)
@@ -341,38 +407,46 @@ function validateBettingState(state) {
   const pendingSet = new Set(pendingPlayers);
   if (
     pendingSet.size !== pendingPlayers.length ||
-    pendingPlayers.some((playerId) => !state.playerIds.includes(playerId))
+    pendingPlayers.some(
+      (playerId) =>
+        !state.playerIds.includes(playerId) || foldedSet.has(playerId),
+    )
   ) {
-    invalidState("pendingPlayerIds must be unique playerIds");
+    invalidState("pendingPlayerIds must be unique active playerIds");
   }
   if (
     state.lastAggressorId !== null &&
-    !state.playerIds.includes(state.lastAggressorId)
+    (!state.playerIds.includes(state.lastAggressorId) ||
+      foldedSet.has(state.lastAggressorId))
   ) {
-    invalidState("lastAggressorId must be null or a playerId");
+    invalidState("lastAggressorId must be null or an active playerId");
   }
 
   if (state.status === "complete") {
+    const activeCommitmentsMatch = activePlayers.every(
+      (playerId) => commitments[playerId] === currentStake,
+    );
     if (
       state.turnPlayerId !== null ||
       pendingPlayers.length !== 0 ||
-      state.playerIds.some(
-        (playerId) => commitments[playerId] !== currentStake,
-      )
+      (activePlayers.length > 1 && !activeCommitmentsMatch)
     ) {
       invalidState(
-        "turn must be null, pending must be empty, and all commitments must match",
+        "turn must be null, pending must be empty, and active commitments must match unless one player remains",
         true,
       );
     }
   } else {
     if (
+      activePlayers.length < 2 ||
       pendingPlayers.length === 0 ||
       state.turnPlayerId !== pendingPlayers[0]
     ) {
-      invalidState("turnPlayerId must equal the first pending player");
+      invalidState(
+        "active betting requires at least two players and turnPlayerId must equal the first pending player",
+      );
     }
-    for (const playerId of state.playerIds) {
+    for (const playerId of activePlayers) {
       const isPending = pendingSet.has(playerId);
       const coherentCommitment = isPending
         ? commitments[playerId] < currentStake
@@ -391,7 +465,7 @@ function validateBettingState(state) {
     invalidState("lastAggressorId must be matched and outside pendingPlayerIds");
   }
 
-  return { currentStake, pot, commitments };
+  return { currentStake, pot, commitments, foldedSet, activePlayers };
 }
 
 export function applyAction(state, playerId, action) {
@@ -423,7 +497,10 @@ export function applyAction(state, playerId, action) {
     const pendingPlayerIds = orderedFrom(
       state.playerIds,
       (playerIndex + 1) % state.playerIds.length,
-    ).filter((candidateId) => candidateId !== playerId);
+    ).filter(
+      (candidateId) =>
+        candidateId !== playerId && !exactState.foldedSet.has(candidateId),
+    );
 
     return {
       ...state,
@@ -437,8 +514,48 @@ export function applyAction(state, playerId, action) {
     };
   }
 
+  if (action.type === "fold") {
+    const commitments = {
+      ...state.commitments,
+      [playerId]: serializeExactInteger(exactState.currentStake),
+    };
+    const foldedSet = new Set([...state.foldedPlayerIds, playerId]);
+    const foldedPlayerIds = state.playerIds.filter((candidateId) =>
+      foldedSet.has(candidateId),
+    );
+    const foldedStakes = {
+      ...state.foldedStakes,
+      [playerId]: serializeExactInteger(exactState.currentStake),
+    };
+    const activePlayerIds = state.playerIds.filter(
+      (candidateId) => !foldedSet.has(candidateId),
+    );
+    const remainingPendingPlayerIds = state.pendingPlayerIds.slice(1);
+    const activeMatched = activePlayerIds.every(
+      (candidateId) =>
+        exactState.commitments[candidateId] === exactState.currentStake,
+    );
+    const complete =
+      activePlayerIds.length === 1 ||
+      (remainingPendingPlayerIds.length === 0 && activeMatched);
+    const pendingPlayerIds = complete ? [] : remainingPendingPlayerIds;
+
+    return {
+      ...state,
+      commitments,
+      pot: serializeExactInteger(
+        exactState.pot + exactState.currentStake - currentCommitment,
+      ),
+      turnPlayerId: complete ? null : pendingPlayerIds[0],
+      status: complete ? "complete" : "betting",
+      pendingPlayerIds,
+      foldedPlayerIds,
+      foldedStakes,
+    };
+  }
+
   if (action.type !== "call") {
-    throw new RangeError("action type must be call or raise");
+    throw new RangeError("action type must be call, raise, or fold");
   }
 
   const commitments = {
@@ -446,7 +563,7 @@ export function applyAction(state, playerId, action) {
     [playerId]: serializeExactInteger(exactState.currentStake),
   };
   const pendingPlayerIds = state.pendingPlayerIds.slice(1);
-  const allMatched = state.playerIds.every(
+  const allMatched = exactState.activePlayers.every(
     (candidateId) =>
       parseExactInteger(
         commitments[candidateId],
