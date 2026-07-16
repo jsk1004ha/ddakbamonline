@@ -265,6 +265,18 @@ export function createBettingState(
   };
 }
 
+function normalizeLegacyFoldState(state) {
+  if (state === null || typeof state !== "object") {
+    return state;
+  }
+  const hasFoldedPlayerIds = Object.hasOwn(state, "foldedPlayerIds");
+  const hasFoldedStakes = Object.hasOwn(state, "foldedStakes");
+  if (hasFoldedPlayerIds || hasFoldedStakes) {
+    return state;
+  }
+  return { ...state, foldedPlayerIds: [], foldedStakes: {} };
+}
+
 function validateBettingState(state) {
   if (state === null || typeof state !== "object") {
     throw new TypeError("state must be a betting state");
@@ -468,7 +480,8 @@ function validateBettingState(state) {
   return { currentStake, pot, commitments, foldedSet, activePlayers };
 }
 
-export function applyAction(state, playerId, action) {
+export function applyAction(inputState, playerId, action) {
+  const state = normalizeLegacyFoldState(inputState);
   const exactState = validateBettingState(state);
   requireAccountId(playerId, "playerId");
   if (state.status !== "betting") {

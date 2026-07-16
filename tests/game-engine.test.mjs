@@ -205,6 +205,43 @@ test("two calls complete betting without mutating earlier states", () => {
   assert.equal(complete.pot, 2);
 });
 
+test("a call upgrades a legacy active state without mutating its shape", () => {
+  const legacyState = { ...createBettingState(["a", "b"]) };
+  delete legacyState.foldedPlayerIds;
+  delete legacyState.foldedStakes;
+
+  const afterCall = applyAction(legacyState, "a", { type: "call" });
+
+  assert.equal(Object.hasOwn(legacyState, "foldedPlayerIds"), false);
+  assert.equal(Object.hasOwn(legacyState, "foldedStakes"), false);
+  assert.deepEqual(legacyState.commitments, { a: 0, b: 0 });
+  assert.deepEqual(afterCall.foldedPlayerIds, []);
+  assert.deepEqual(afterCall.foldedStakes, {});
+  assert.deepEqual(afterCall.commitments, { a: 1, b: 0 });
+  assert.equal(afterCall.turnPlayerId, "b");
+});
+
+test("a raise upgrades a legacy active state while preserving exact quantities", () => {
+  const hugeStake = "900719925474099312345678901234567890";
+  const legacyState = { ...createBettingState(["a", "b", "c"]) };
+  delete legacyState.foldedPlayerIds;
+  delete legacyState.foldedStakes;
+
+  const afterRaise = applyAction(legacyState, "a", {
+    type: "raise",
+    amount: hugeStake,
+  });
+
+  assert.equal(Object.hasOwn(legacyState, "foldedPlayerIds"), false);
+  assert.equal(Object.hasOwn(legacyState, "foldedStakes"), false);
+  assert.deepEqual(afterRaise.foldedPlayerIds, []);
+  assert.deepEqual(afterRaise.foldedStakes, {});
+  assert.equal(afterRaise.currentStake, hugeStake);
+  assert.equal(afterRaise.commitments.a, hugeStake);
+  assert.equal(afterRaise.pot, hugeStake);
+  assert.deepEqual(afterRaise.pendingPlayerIds, ["b", "c"]);
+});
+
 test("a raise resets required actions to every other player", () => {
   let state = createBettingState(["a", "b", "c", "d"]);
   state = applyAction(state, "a", { type: "call" });
@@ -435,7 +472,13 @@ test("applyAction rejects incoherent pending players, turn, and aggressor", () =
 test("applyAction rejects malformed rehydrated folded players and stakes", () => {
   const initial = createBettingState(["a", "b", "c", "d"]);
   const afterFold = applyAction(initial, "a", { type: "fold" });
+  const missingFoldedPlayerIds = { ...initial };
+  delete missingFoldedPlayerIds.foldedPlayerIds;
+  const missingFoldedStakes = { ...initial };
+  delete missingFoldedStakes.foldedStakes;
   const malformedStates = [
+    missingFoldedPlayerIds,
+    missingFoldedStakes,
     { ...initial, foldedPlayerIds: null },
     { ...initial, foldedPlayerIds: ["a", "a"], foldedStakes: { a: 1 } },
     {
