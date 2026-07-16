@@ -32,19 +32,19 @@ test("coalesces a slow request by scope until it settles", async () => {
   assert.equal(slowRequestCalls, 2);
 });
 
-test("a newer scope does not let an older completion clear its request", async () => {
+test("leaving and rejoining the same room starts a new scoped request", async () => {
   const coordinator = createInFlightRequestCoordinator();
   let finishOldRequest;
   let finishNewRequest;
   let newRequestCalls = 0;
 
   const oldRequest = coordinator.run(
-    "account-1:room-1",
+    "account-1:1:room-1:room-1",
     () => new Promise((resolve) => {
       finishOldRequest = resolve;
     }),
   );
-  const newRequest = coordinator.run("account-1:room-2", () => {
+  const newRequest = coordinator.run("account-1:1:main:room-1", () => {
     newRequestCalls += 1;
     return new Promise((resolve) => {
       finishNewRequest = resolve;
@@ -54,7 +54,7 @@ test("a newer scope does not let an older completion clear its request", async (
   finishOldRequest();
   await oldRequest;
 
-  const coalescedNewRequest = coordinator.run("account-1:room-2", () => {
+  const coalescedNewRequest = coordinator.run("account-1:1:main:room-1", () => {
     newRequestCalls += 1;
     return Promise.resolve();
   });

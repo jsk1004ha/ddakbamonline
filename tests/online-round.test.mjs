@@ -813,7 +813,7 @@ test("waiting rooms poll as a fallback when realtime changes are missed", () => 
   );
   assert.match(
     accountRoomSource,
-    /const refreshScope = `\$\{activeScope\.actorId\}:\$\{activeScope\.generation\}:\$\{roomId\}`;[\s\S]*?roomRefreshCoordinatorRef\.current\.run\([\s\S]*?refreshScope/,
+    /const startingRoomId = currentRoomIdRef\.current;[\s\S]*?const refreshScope = `\$\{activeScope\.actorId\}:\$\{activeScope\.generation\}:\$\{startingRoomId \?\? "main"\}:\$\{roomId\}`;[\s\S]*?roomRefreshCoordinatorRef\.current\.run\([\s\S]*?refreshScope/,
   );
 });
 

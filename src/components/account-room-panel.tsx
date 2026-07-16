@@ -193,12 +193,12 @@ export default function AccountRoomPanel() {
       if (!supabase || !user) return Promise.resolve();
       const activeScope = scope ?? captureAccountScope(user.id);
       if (!isActiveAccount(activeScope)) return Promise.resolve();
-      const refreshScope = `${activeScope.actorId}:${activeScope.generation}:${roomId}`;
+      const startingRoomId = currentRoomIdRef.current;
+      const refreshScope = `${activeScope.actorId}:${activeScope.generation}:${startingRoomId ?? "main"}:${roomId}`;
       return roomRefreshCoordinatorRef.current.run(
         refreshScope,
         async () => {
           const refreshRequest = ++roomRefreshRequestRef.current;
-          const startingRoomId = currentRoomIdRef.current;
           const [roomResponse, membersResponse, membershipResponse] = await Promise.all([
             supabase.from("game_rooms").select("*").eq("id", roomId).single(),
             supabase
