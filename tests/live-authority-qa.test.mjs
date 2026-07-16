@@ -1,9 +1,30 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import ts from "typescript";
 
 const script = await readFile(
   new URL("../scripts/live-authority-qa.mjs", import.meta.url),
+  "utf8",
+);
+const accountIdSource = await readFile(
+  new URL("../src/lib/auth/account-id.ts", import.meta.url),
+  "utf8",
+);
+const accountIdModule = ts.transpileModule(accountIdSource, {
+  compilerOptions: {
+    module: ts.ModuleKind.ESNext,
+    target: ts.ScriptTarget.ES2022,
+  },
+}).outputText;
+const { accountIdEmail, validateAccountId } = await import(
+  `data:text/javascript;base64,${Buffer.from(accountIdModule).toString("base64")}`
+);
+const handleNewUserSql = await readFile(
+  new URL(
+    "../supabase/migrations/20260715133733_normalize_korean_auth_hash_case.sql",
+    import.meta.url,
+  ),
   "utf8",
 );
 
@@ -17,13 +38,20 @@ for (const [name, value] of Object.entries(importEnv)) {
   process.env[name] ??= value;
 }
 
-const { createFetchWithTimeout, discoverQaNamespaceUsers } = await import(
-  "../scripts/live-authority-qa.mjs"
-);
+const {
+  createFetchWithTimeout,
+  createQaIdentities,
+  discoverQaNamespaceUsers,
+  provisionQaUser,
+  signIn,
+} = await import("../scripts/live-authority-qa.mjs");
 
 test("live QA exposes testable helpers without running the remote scenario on import", () => {
+  assert.match(script, /export function createQaIdentities/);
   assert.match(script, /export function createFetchWithTimeout/);
   assert.match(script, /export async function discoverQaNamespaceUsers/);
+  assert.match(script, /export async function provisionQaUser/);
+  assert.match(script, /export async function signIn/);
   assert.match(script, /async function runLiveAuthorityQa\(\)/);
   assert.match(
     script,
@@ -31,10 +59,69 @@ test("live QA exposes testable helpers without running the remote scenario on im
   );
 });
 
+test("QA provisioning and sign-in share trigger-compatible identity emails", async () => {
+  const namespace = "0123456789abcdef0123456789abcdef";
+  const identities = createQaIdentities(namespace);
+  const emailByAccountId = new Map(
+    identities.map(({ accountId, email }) => [accountId, email]),
+  );
+  const createdPayloads = [];
+  const signInPayloads = [];
+  const trackedUserIds = [];
+  const identity = identities[0];
+
+  await provisionQaUser(identity.accountId, {
+    adminClient: {
+      auth: {
+        admin: {
+          async createUser(payload) {
+            createdPayloads.push(payload);
+            return { data: { user: { id: "created-user" } }, error: null };
+          },
+        },
+      },
+    },
+    emailByAccountId,
+    namespace,
+    password: "test-password",
+    trackedUserIds,
+  });
+  await signIn(
+    {
+      auth: {
+        async signInWithPassword(payload) {
+          signInPayloads.push(payload);
+          return { data: { user: { id: "signed-in-user" } }, error: null };
+        },
+      },
+    },
+    identity.accountId,
+    { emailByAccountId, password: "test-password" },
+  );
+
+  assert.equal(createdPayloads[0].email, signInPayloads[0].email);
+  assert.equal(createdPayloads[0].email, identity.email);
+  assert.equal(createdPayloads[0].user_metadata.qa_namespace, namespace);
+  assert.deepEqual(trackedUserIds, ["created-user"]);
+  assert.equal(identities.length, 5);
+  assert.equal(new Set(identities.map(({ accountId }) => accountId)).size, 5);
+  for (const { accountId, email } of identities) {
+    assert.equal(validateAccountId(accountId), true);
+    assert.ok(accountId.length <= 20);
+    assert.ok(accountId.includes(namespace.slice(0, 12)));
+    assert.equal(email, await accountIdEmail(accountId));
+    assert.equal(email.split("@", 1)[0], accountId);
+  }
+  assert.match(
+    handleNewUserSql,
+    /requested_account_id ~ '\^\[a-z0-9_\]\+\$'[\s\S]*?email_local_part = requested_account_id/,
+  );
+});
+
 test("namespace discovery increments pages locally and stops from returned users and total", async () => {
   const namespace = "0123456789abcdef0123456789abcdef";
-  const firstEmail = `qa_host_01234.${namespace}@accounts.ddakbamonline.com`;
-  const secondEmail = `qa_watch_01234.${namespace}@accounts.ddakbamonline.com`;
+  const firstEmail = "qh_0123456789ab@accounts.ddakbamonline.com";
+  const secondEmail = "qw_0123456789ab@accounts.ddakbamonline.com";
   const pages = [
     [
       { id: "other", email: "other@example.com", user_metadata: {} },
@@ -87,8 +174,7 @@ test("namespace discovery increments pages locally and stops from returned users
 
 test("namespace discovery rejects an expected email without the exact marker", async () => {
   const namespace = "0123456789abcdef0123456789abcdef";
-  const expectedEmail =
-    `qa_host_01234.${namespace}@accounts.ddakbamonline.com`;
+  const expectedEmail = "qh_0123456789ab@accounts.ddakbamonline.com";
   const authAdmin = {
     async listUsers() {
       return {
@@ -219,11 +305,17 @@ test("QA namespace identifiers are registered before creates and recover respons
   assert.ok(roomCodesIndex < firstRemoteCreate);
   assert.match(
     script,
-    /\(accountId\) => `\$\{accountId\}\.\$\{qaNamespace\}@\$\{internalDomain\}`/,
+    /email: `\$\{accountId\}@\$\{domain\}`/,
   );
-  assert.match(script, /const qaSuffix = qaNamespace\.slice\(0, 5\)/);
+  assert.match(script, /const entropy = namespace\.slice\(0, 12\)/);
+  assert.match(script, /assert\.match\(accountId, \/\^\[a-z0-9_\]\{2,20\}\$\//);
   assert.match(script, /const qaEmailSet = new Set\(qaEmails\)/);
   assert.match(script, /const qaRoomCodeSet = new Set\(qaRoomCodes\)/);
+  assert.equal(
+    [...script.matchAll(/const email = emailByAccountId\.get\(accountId\)/g)]
+      .length,
+    2,
+  );
   assert.match(
     script,
     /export async function discoverQaNamespaceUsers\(\{[\s\S]*?authAdmin\.listUsers\(/,
@@ -239,7 +331,7 @@ test("QA namespace identifiers are registered before creates and recover respons
   );
   assert.match(
     script,
-    /user_metadata:\s*\{[\s\S]*?qa_namespace: qaNamespace/,
+    /user_metadata:\s*\{[\s\S]*?qa_namespace: namespace/,
   );
   assert.match(
     script,
@@ -319,8 +411,8 @@ test("showdown driving and namespace pagination fail explicitly at finite caps",
 test("live authority QA provisions four participant clients and maps every actor", () => {
   assert.match(script, /const guestTwo = client\(\)/);
   assert.match(script, /const guestThree = client\(\)/);
-  assert.match(script, /const guestTwoAccountId = `qa_guest_two_\$\{qaSuffix\}`/);
-  assert.match(script, /const guestThreeAccountId = `qa_guest_three_\$\{qaSuffix\}`/);
+  assert.match(script, /const guestTwoAccountId = guestTwoIdentity\.accountId/);
+  assert.match(script, /const guestThreeAccountId = guestThreeIdentity\.accountId/);
   assert.match(script, /provisionQaUser\(guestTwoAccountId\)/);
   assert.match(script, /provisionQaUser\(guestThreeAccountId\)/);
   assert.match(script, /signIn\(guestTwo, guestTwoAccountId\)/);

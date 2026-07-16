@@ -32,22 +32,37 @@ const AUTH_USERS_PER_PAGE = 1_000;
 const PRESENCE_BACKDATE_MS = 2 * 60_000;
 const IDLE_BACKDATE_MS = 5 * 60_000;
 const qaNamespace = crypto.randomUUID().replaceAll("-", "");
-const qaSuffix = qaNamespace.slice(0, 5);
-const hostAccountId = `qa_host_${qaSuffix}`;
-const guestAccountId = `qa_guest_${qaSuffix}`;
-const guestTwoAccountId = `qa_guest_two_${qaSuffix}`;
-const guestThreeAccountId = `qa_guest_three_${qaSuffix}`;
-const observerAccountId = `qa_watch_${qaSuffix}`;
-const qaAccountIds = [
-  hostAccountId,
-  guestAccountId,
-  guestTwoAccountId,
-  guestThreeAccountId,
-  observerAccountId,
-];
-const qaEmails = qaAccountIds.map(
-  (accountId) => `${accountId}.${qaNamespace}@${internalDomain}`,
-);
+
+export function createQaIdentities(namespace, domain = internalDomain) {
+  const entropy = namespace.slice(0, 12);
+  const accountIds = ["qh", "q1", "q2", "q3", "qw"].map(
+    (role) => `${role}_${entropy}`,
+  );
+  assert.equal(new Set(accountIds).size, 5);
+  for (const accountId of accountIds) {
+    assert.match(accountId, /^[a-z0-9_]{2,20}$/);
+  }
+  return accountIds.map((accountId) => ({
+    accountId,
+    email: `${accountId}@${domain}`,
+  }));
+}
+
+const qaIdentities = createQaIdentities(qaNamespace);
+const [
+  hostIdentity,
+  guestIdentity,
+  guestTwoIdentity,
+  guestThreeIdentity,
+  observerIdentity,
+] = qaIdentities;
+const hostAccountId = hostIdentity.accountId;
+const guestAccountId = guestIdentity.accountId;
+const guestTwoAccountId = guestTwoIdentity.accountId;
+const guestThreeAccountId = guestThreeIdentity.accountId;
+const observerAccountId = observerIdentity.accountId;
+const qaAccountIds = qaIdentities.map(({ accountId }) => accountId);
+const qaEmails = qaIdentities.map(({ email }) => email);
 const qaEmailSet = new Set(qaEmails);
 const qaEmailByAccountId = new Map(
   qaAccountIds.map((accountId, index) => [accountId, qaEmails[index]]),
@@ -170,22 +185,31 @@ const obligationIds = [];
 const offlineObligationIds = [];
 const participantClients = new Map();
 
-async function provisionQaUser(accountId) {
-  const email = qaEmailByAccountId.get(accountId);
+export async function provisionQaUser(
+  accountId,
+  {
+    adminClient = admin,
+    emailByAccountId = qaEmailByAccountId,
+    namespace = qaNamespace,
+    password = qaPassword,
+    trackedUserIds = createdUserIds,
+  } = {},
+) {
+  const email = emailByAccountId.get(accountId);
   assert.ok(email, "QA user email was not pre-registered");
-  const { data, error } = await admin.auth.admin.createUser({
+  const { data, error } = await adminClient.auth.admin.createUser({
     email,
-    password: qaPassword,
+    password,
     email_confirm: true,
     user_metadata: {
       account_id: accountId,
       display_name: accountId,
-      qa_namespace: qaNamespace,
+      qa_namespace: namespace,
     },
   });
   assert.ifError(error);
   assert.ok(data.user?.id);
-  createdUserIds.push(data.user.id);
+  trackedUserIds.push(data.user.id);
   return data.user.id;
 }
 
@@ -475,10 +499,19 @@ function actorClient(userId) {
   throw new Error("turn player was not a room member");
 }
 
-async function signIn(supabase, accountId) {
+export async function signIn(
+  supabase,
+  accountId,
+  {
+    emailByAccountId = qaEmailByAccountId,
+    password = qaPassword,
+  } = {},
+) {
+  const email = emailByAccountId.get(accountId);
+  assert.ok(email, "QA user email was not pre-registered");
   const { data, error } = await supabase.auth.signInWithPassword({
-    email: `${accountId}@${internalDomain}`,
-    password: qaPassword,
+    email,
+    password,
   });
   assert.ifError(error);
   assert.ok(data.user?.id);
